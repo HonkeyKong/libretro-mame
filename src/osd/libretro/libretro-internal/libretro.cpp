@@ -1,9 +1,13 @@
 #ifdef __GNUC__
 #include <unistd.h>
 #endif
-#include <stdint.h>
+/* #include <stdint.h>
 #include <string.h>
-#include <stdarg.h>
+#include <stdarg.h> */
+
+#include <cstdint>
+#include <cstring>
+#include <cstdarg>
 
 #include "osdepend.h"
 
@@ -18,6 +22,13 @@
 #include "libretro.h"
 #include "libretro_shared.h"
 #include "libretro_core_options.h"
+
+/*  Experimental Libretro extension API, available at
+    libretro_ext.h and libretro_ext.cpp. Not part of 
+    the standard libretro API, but safe to call from 
+    any frontend (will just do nothing if unsupported). */
+
+#include "libretro_ext.h"
 
 /* forward decls / externs / prototypes */
 
@@ -895,6 +906,10 @@ void retro_run(void)
       update_av_info();
    else if (video_changed == 2)
       update_geometry();
+
+   // #ifdef LIBRETRO_EXT
+   g_extFrameCounter++;
+   // #endif
 }
 
 bool retro_load_game(const struct retro_game_info *info)

@@ -559,11 +559,18 @@ void device_t::start()
 	notify_clock_changed();
 
 	// if we're debugging, create a device_debug object
-	if ((machine().debug_flags & DEBUG_FLAG_ENABLED) != 0)
+	// Gate this around our Libretro extension API so it
+	// gets compiled in unconditionally when we're building
+	// with Libretro extensions enabled.
+	#ifndef LIBRETRO_EXT
+	if (((machine().debug_flags & DEBUG_FLAG_ENABLED) != 0))
 	{
+	#endif // LIBRETRO_EXT
 		m_debug = std::make_unique<device_debug>(*this);
 		debug_setup();
+	#ifndef LIBRETRO_EXT
 	}
+	#endif // LIBRETRO_EXT
 
 	// register our save states
 	save_item(NAME(m_unscaled_clock));

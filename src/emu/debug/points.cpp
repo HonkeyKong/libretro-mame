@@ -15,6 +15,9 @@
 #include "debugcon.h"
 #include "debugcpu.h"
 
+// #include "../osd/libretro/libretro-internal/libretro_ext.h"
+// Fuck that, forward declare it.
+void libretro_ext_record_watch_hit(const char *cpuTag, uint64_t pc, uint64_t address, uint32_t value, uint8_t access, uint8_t width, uint64_t totalCycles);
 
 //**************************************************************************
 //  DEBUG BREAKPOINT
@@ -423,6 +426,17 @@ void debug_watchpoint::triggered(read_or_write type, offs_t address, u64 data, u
 			debug.cpu().set_break_cpu(&m_debugInterface->device());
 		}
 		m_debugInterface->set_triggered_watchpoint(this);
+		
+		// Record PC on Watchpoint hit
+		libretro_ext_record_watch_hit(
+			m_debugInterface->device().tag(),
+			state->pc(),
+			address,
+			data,
+			u8(type),
+			size * unit_size,
+			(uint64_t)m_debugInterface->device().execute().total_cycles()
+		);
 	}
 
 	debug.cpu().set_within_instruction(false);

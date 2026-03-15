@@ -201,7 +201,8 @@ end
 		}
 
 		files {
-			MAME_DIR .. "src/osd/libretro/libretro-internal/libretro.cpp"
+			MAME_DIR .. "src/osd/libretro/libretro-internal/libretro.cpp",
+			MAME_DIR .. "src/osd/libretro/libretro-internal/libretro_ext.cpp",
 		}
 
 		-- Ensure the public API is made public with GNU ld
@@ -415,6 +416,7 @@ end
 		files {
 			MAME_DIR .. "src/osd/libretro/retromain.cpp",
 			MAME_DIR .. "src/osd/libretro/libretro-internal/libretro.cpp",
+			MAME_DIR .. "src/osd/libretro/libretro-internal/libretro_ext.cpp",
 		}
 	end
 -- RETRO HACK

@@ -7,7 +7,6 @@
     Debugger CPU/memory interface engine.
 
 ***************************************************************************/
-
 #include "emu.h"
 #include "debugcpu.h"
 #include "debugbuf.h"
@@ -27,9 +26,13 @@
 #include "corestr.h"
 #include "osdepend.h"
 #include "xmlfile.h"
-
+#include <iterator> // For std::size
+// #include "../../osd/libretro/libretro-internal/libretro_ext.h" // Libretro extensions
 
 const size_t debugger_cpu::NUM_TEMP_VARIABLES = 10;
+
+// Forward declare our extended function
+void libretro_ext_record_pc(const char *cpuTag, uint64_t pc);
 
 /*-------------------------------------------------
     constructor - initialize the CPU
@@ -862,6 +865,12 @@ void device_debug::instruction_hook(offs_t curpc)
 
 	// note that we are in the debugger code
 	debugcpu.set_within_instruction(true);
+
+	/*  Capture the PC and store it in a ring buffer with the last 255 PCs
+		for use in libretro extensions. This allows the frontend to query 
+		the last few PCs executed when a breakpoint is hit, which can be 
+		useful for debugging and dynamic ROM patching. */
+	libretro_ext_record_pc(m_device.tag(), (uint64_t)curpc);
 
 	// update the history
 	m_pc_history[m_pc_history_index] = curpc;
