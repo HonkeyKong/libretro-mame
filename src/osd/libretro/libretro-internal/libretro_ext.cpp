@@ -29,7 +29,9 @@ ABI rules:
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <cstring>
+#include <cstdio>
 
 #if defined(_WIN32)
   #define LIBRETRO_EXT_EXPORT extern "C" __declspec(dllexport)
@@ -49,6 +51,12 @@ static bool g_execHooksInstalled = false;
 static std::vector<std::string> g_regionTags;
 static libretro_ext_exec_hit g_lastExecHit = {};
 static std::vector<libretro_ext_exec_trigger> g_execTriggers;
+static std::vector<retro_memory_descriptor> g_memoryMapDescs;
+static std::deque<std::string> g_memoryMapAddrspaces;
+
+// DIP switch field cache — rebuilt whenever the machine pointer changes.
+static running_machine* g_dipLastMachine = nullptr;
+static std::vector<ioport_field*> g_dipFields;
 
 // Lazy way of seeing all devices attached to the running machine
 static void log_all_devices(running_machine& mach)
@@ -66,13 +74,13 @@ void libretro_ext_record_pc(const char* cpuTag, uint64_t pc)
     g_extPcHistory[cpuTag].push(pc);
 }
 
-void libretro_ext_record_watch_hit(const char* cpuTag,
-                                   uint64_t pc,
-                                   uint64_t address,
-                                   uint32_t value,
-                                   uint8_t access,
-                                   uint8_t width,
-                                   uint64_t totalCycles)
+static void libretro_ext_check_watch_hit(const char* cpuTag,
+                                uint64_t pc,
+                                uint64_t address,
+                                uint32_t value,
+                                uint8_t access,
+                                uint8_t width,
+                                uint64_t totalCycles)
 {
     if (!cpuTag)
         return;
@@ -93,19 +101,19 @@ void libretro_ext_record_watch_hit(const char* cpuTag,
         g_extLastWatchHit = {};
         g_extLastWatchHit.hit = true;
         std::strncpy(g_extLastWatchHit.cpuTag, cpuTag, sizeof(g_extLastWatchHit.cpuTag) - 1);
-        g_extLastWatchHit.pc = pc;
         g_extLastWatchHit.address = address;
+        g_extLastWatchHit.pc = pc;
+        g_extLastWatchHit.frame = g_extFrameCounter;
+        g_extLastWatchHit.totalCycles = totalCycles;
         g_extLastWatchHit.value = value;
         g_extLastWatchHit.access = access;
         g_extLastWatchHit.width = width;
-        g_extLastWatchHit.frame = g_extFrameCounter;
-        g_extLastWatchHit.totalCycles = totalCycles;
 
-        auto it = g_extPcHistory.find(cpuTag);
+        const auto it = g_extPcHistory.find(cpuTag);
         if (it != g_extPcHistory.end())
         {
             const libretro_ext_pc_ring& ring = it->second;
-            uint32_t count = ring.filled ? 256 : ring.head;
+            const uint32_t count = ring.filled ? 256 : ring.head;
             g_extLastWatchHit.historyCount = count;
 
             for (uint32_t i = 0; i < count; i++)
@@ -114,8 +122,22 @@ void libretro_ext_record_watch_hit(const char* cpuTag,
                 g_extLastWatchHit.pcHistory[i] = ring.pcs[idx];
             }
         }
+
         break;
     }
+}
+
+void libretro_ext_record_watch_hit(const char* cpuTag,
+                                   uint64_t pc,
+                                   uint64_t address,
+                                   uint32_t value,
+                                   uint8_t access,
+                                   uint8_t width,
+                                   uint64_t totalCycles)
+{
+    /* log_cb(RETRO_LOG_INFO, "Watch hit: CPU=%s PC=%llX Address=%llX Value=%llX Access=%08X Width=%02X TotalCycles=%llX\n",
+           cpuTag, pc, address, value, access, width, totalCycles); */
+    libretro_ext_check_watch_hit(cpuTag, pc, address, value, access, width, totalCycles);
 }
 
 static void invalidate_region_cache()
@@ -161,6 +183,17 @@ static screen_device* libretro_ext_first_screen(running_machine& mach)
     return nullptr;
 }
 
+static void libretro_ext_check_watch_hit_impl(const char* cpuTag,
+                                uint64_t pc,
+                                uint64_t address,
+                                uint32_t value,
+                                uint8_t access,
+                                uint8_t width,
+                                uint64_t totalCycles)
+{
+    libretro_ext_check_watch_hit(cpuTag, pc, address, value, access, width, totalCycles);
+}
+
 static uint64_t libretro_ext_get_frame_number_impl()
 {
     /* running_machine* mach = libretro_ext_machine();
@@ -204,7 +237,7 @@ static device_t* libretro_ext_find_device(running_machine& mach, const char* tag
     return mach.root_device().subdevice(tag);
 }
 
-static uint64_t libretro_ext_get_cpu_total_cycles_impl(const char* cpu_tag)
+/* static uint64_t libretro_ext_get_cpu_total_cycles_impl(const char* cpu_tag)
 {
     running_machine* mach = libretro_ext_machine();
     if (!mach) return 0;
@@ -216,7 +249,7 @@ static uint64_t libretro_ext_get_cpu_total_cycles_impl(const char* cpu_tag)
     if (!dev->interface(exec)) return 0;
 
     return (uint64_t)exec->total_cycles();
-}
+} */
 
 static int libretro_ext_get_region_count_impl()
 {
@@ -625,6 +658,281 @@ static void libretro_ext_install_exec_hooks_if_needed()
     g_execHooksInstalled = true;
 }
 
+void libretro_ext_set_memory_maps(retro_environment_t environ_cb)
+{
+    if (!environ_cb)
+        return;
+
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return;
+
+    g_memoryMapDescs.clear();
+    g_memoryMapAddrspaces.clear();
+
+    int device_index = 0;
+    memory_interface_enumerator iter(mach->root_device());
+    for (device_memory_interface& memory : iter)
+    {
+        if (!memory.has_space(AS_PROGRAM))
+        {
+            device_index++;
+            continue;
+        }
+
+        address_space& space = memory.space(AS_PROGRAM);
+        const bool big_endian = (space.endianness() == ENDIANNESS_BIG);
+
+        // Build address-space name: empty for the primary device, "CPUn" for others.
+        if (device_index == 0)
+            g_memoryMapAddrspaces.emplace_back("");
+        else
+        {
+            char buf[9];
+            std::snprintf(buf, sizeof(buf), "CPU%d", device_index);
+            g_memoryMapAddrspaces.emplace_back(buf);
+        }
+        const std::string& asname = g_memoryMapAddrspaces.back();
+
+        for (address_map_entry& entry : space.map()->m_entrylist)
+        {
+            const bool is_ram_read  = (entry.m_read.m_type  == AMH_RAM);
+            const bool is_ram_write = (entry.m_write.m_type == AMH_RAM);
+
+            if (!is_ram_read && !is_ram_write)
+                continue;
+
+            void* ptr = space.get_read_ptr(entry.m_addrstart);
+            if (!ptr)
+                continue;
+
+            retro_memory_descriptor desc = {};
+            desc.ptr        = ptr;
+            desc.start      = (size_t)entry.m_addrstart;
+            desc.len        = (size_t)(entry.m_addrend - entry.m_addrstart + 1);
+            desc.offset     = 0;
+            desc.select     = 0;
+            desc.disconnect = 0;
+
+            uint64_t flags = 0;
+            if (is_ram_read && is_ram_write)
+                flags |= RETRO_MEMDESC_SYSTEM_RAM;
+            else if (is_ram_read)
+                flags |= RETRO_MEMDESC_CONST;
+
+            if (big_endian)
+                flags |= RETRO_MEMDESC_BIGENDIAN;
+
+            desc.flags     = flags;
+            desc.addrspace = asname.empty() ? nullptr : asname.c_str();
+
+            g_memoryMapDescs.push_back(desc);
+
+            log_cb(RETRO_LOG_DEBUG,
+                   "libretro_ext: mmap dev=%s start=%08X end=%08X flags=%04llX ptr=%p\n",
+                   memory.device().tag(),
+                   (unsigned)entry.m_addrstart,
+                   (unsigned)entry.m_addrend,
+                   (unsigned long long)flags,
+                   ptr);
+        }
+
+        device_index++;
+    }
+
+    if (g_memoryMapDescs.empty())
+    {
+        log_cb(RETRO_LOG_WARN, "libretro_ext: SET_MEMORY_MAPS: no mappable RAM regions found\n");
+        return;
+    }
+
+    retro_memory_map mmap = {};
+    mmap.descriptors     = g_memoryMapDescs.data();
+    mmap.num_descriptors = (unsigned)g_memoryMapDescs.size();
+
+    if (!environ_cb(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &mmap))
+        log_cb(RETRO_LOG_WARN, "libretro_ext: SET_MEMORY_MAPS not supported by frontend\n");
+    else
+        log_cb(RETRO_LOG_INFO, "libretro_ext: SET_MEMORY_MAPS registered %u descriptor(s)\n",
+               mmap.num_descriptors);
+}
+
+static void libretro_ext_clear_watch_rules_impl()
+{
+    g_extWatchRules.clear();
+}
+
+static void libretro_ext_add_watch_rule_impl(const char* cpuTag,
+                                             uint64_t start,
+                                             uint64_t end,
+                                             uint8_t access,
+                                             uint8_t width)
+{
+    if (!cpuTag || !cpuTag[0])
+        return;
+
+    libretro_ext_watch_rule rule{};
+    rule.cpuTag = cpuTag;
+    rule.start = start;
+    rule.end = end;
+    rule.access = access;
+    rule.width = width;
+    rule.enabled = true;
+    g_extWatchRules.push_back(rule);
+
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return;
+
+    device_t* dev = mach->root_device().subdevice(cpuTag);
+    if (!dev)
+    {
+        log_cb(RETRO_LOG_INFO, "libretro_ext: no device for tag %s\n", cpuTag);
+        return;
+    }
+
+    if (!dev->debug())
+    {
+        log_cb(RETRO_LOG_INFO, "libretro_ext: device %s has no debug object\n", cpuTag);
+        return;
+    }
+
+    device_memory_interface* mem = nullptr;
+    if (!dev->interface(mem) || !mem->has_space(AS_PROGRAM))
+    {
+        log_cb(RETRO_LOG_INFO, "libretro_ext: device %s has no AS_PROGRAM space\n", cpuTag);
+        return;
+    }
+
+    address_space& space = mem->space(AS_PROGRAM);
+
+    offs_t address = (offs_t)start;
+    offs_t length  = (offs_t)((end >= start) ? (end - start) : 0);
+
+    // access: 1=read, 2=write, 3=read|write
+    if (access & 1)
+        dev->debug()->watchpoint_set(space, read_or_write::READ, address, length, nullptr, {});
+
+    if (access & 2)
+        dev->debug()->watchpoint_set(space, read_or_write::WRITE, address, length, nullptr, {});
+
+    log_cb(RETRO_LOG_INFO,
+           "libretro_ext: installed watch rule cpu=%s start=%llX end=%llX access=%u width=%u\n",
+           cpuTag,
+           (unsigned long long)start,
+           (unsigned long long)end,
+           (unsigned)access,
+           (unsigned)width);
+}
+
+static bool libretro_ext_get_last_watch_hit_impl(libretro_ext_watch_hit* outHit)
+{
+    if (!outHit)
+        return false;
+
+    *outHit = g_extLastWatchHit;
+    return g_extLastWatchHit.hit;
+}
+
+
+static void libretro_ext_clear_last_watch_hit_impl()
+{
+    std::memset(&g_extLastWatchHit, 0, sizeof(g_extLastWatchHit));
+}
+
+// ---------------------------------------------------------------------------
+// DIP switch implementation
+// ---------------------------------------------------------------------------
+
+static void libretro_ext_build_dip_cache(running_machine& mach)
+{
+    if (&mach == g_dipLastMachine)
+        return;
+
+    g_dipFields.clear();
+    g_dipLastMachine = &mach;
+
+    for (auto& [tag, port] : mach.ioport().ports())
+    {
+        for (ioport_field& field : port->fields())
+        {
+            if (field.type() == IPT_DIPSWITCH)
+                g_dipFields.push_back(&field);
+        }
+    }
+}
+
+static int libretro_ext_get_dip_count_impl()
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return 0;
+
+    libretro_ext_build_dip_cache(*mach);
+    return (int)g_dipFields.size();
+}
+
+static bool libretro_ext_get_dip_info_impl(int index, libretro_ext_dip_info* out)
+{
+    if (!out)
+        return false;
+
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    libretro_ext_build_dip_cache(*mach);
+
+    if (index < 0 || index >= (int)g_dipFields.size())
+        return false;
+
+    ioport_field* field = g_dipFields[index];
+    std::memset(out, 0, sizeof(*out));
+
+    std::strncpy(out->name, field->name().c_str(),
+                 sizeof(out->name) - 1);
+    std::strncpy(out->port_tag, field->port().tag(),
+                 sizeof(out->port_tag) - 1);
+
+    out->mask          = (uint32_t)field->mask();
+    out->default_value = (uint32_t)(field->defvalue() & field->mask());
+
+    ioport_field::user_settings us;
+    field->get_user_settings(us);
+    out->current_value = (uint32_t)(us.value & field->mask());
+
+    out->setting_count = 0;
+    for (const ioport_setting& s : field->settings())
+    {
+        if (out->setting_count >= LIBRETRO_EXT_DIP_MAX_SETTINGS)
+            break;
+        libretro_ext_dip_setting& ds = out->settings[out->setting_count++];
+        std::strncpy(ds.name, s.name() ? s.name() : "", sizeof(ds.name) - 1);
+        ds.value = (uint32_t)(s.value() & field->mask());
+    }
+
+    return true;
+}
+
+static bool libretro_ext_set_dip_value_impl(int index, uint32_t value)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    libretro_ext_build_dip_cache(*mach);
+
+    if (index < 0 || index >= (int)g_dipFields.size())
+        return false;
+
+    ioport_field* field = g_dipFields[index];
+    ioport_field::user_settings us;
+    field->get_user_settings(us);
+    us.value = value & field->mask();
+    field->set_user_settings(us);
+    return true;
+}
+
 static const libretro_ext_api_v1 g_ext_api_v1 = {
     1,
     &libretro_ext_get_driver_name_impl,
@@ -660,8 +968,54 @@ static const libretro_ext_api_v2 g_ext_api_v2 = {
     libretro_ext_get_frame_number_impl,
     libretro_ext_get_time_attoseconds_impl,
 
-    libretro_ext_get_cpu_total_cycles_impl,
-    libretro_ext_get_cpu_total_cycles_by_tag_impl
+    // libretro_ext_get_cpu_total_cycles_impl,
+    libretro_ext_get_cpu_total_cycles_by_tag_impl,
+
+    libretro_ext_clear_watch_rules_impl,
+    libretro_ext_add_watch_rule_impl,
+    libretro_ext_get_last_watch_hit_impl,
+    libretro_ext_clear_last_watch_hit_impl,
+    libretro_ext_check_watch_hit_impl
+};
+
+static const libretro_ext_api_v3 g_ext_api_v3 = {
+    3,
+    sizeof(libretro_ext_api_v3),
+
+    libretro_ext_get_driver_name_impl,
+    libretro_ext_cpu_count_impl,
+    libretro_ext_get_cpu_tag_impl,
+    libretro_ext_get_cpu_pc_impl,
+
+    libretro_ext_read_u8_impl,
+    libretro_ext_read_u16_impl,
+    libretro_ext_read_u32_impl,
+
+    libretro_ext_write_u8_impl,
+    libretro_ext_write_u16_impl,
+    libretro_ext_write_u32_impl,
+
+    libretro_ext_get_region_count_impl,
+    libretro_ext_get_region_tag_impl,
+    libretro_ext_get_region_size_impl,
+
+    libretro_ext_read_region_impl,
+    libretro_ext_write_region_impl,
+
+    libretro_ext_get_frame_number_impl,
+    libretro_ext_get_time_attoseconds_impl,
+
+    libretro_ext_get_cpu_total_cycles_by_tag_impl,
+
+    libretro_ext_clear_watch_rules_impl,
+    libretro_ext_add_watch_rule_impl,
+    libretro_ext_get_last_watch_hit_impl,
+    libretro_ext_clear_last_watch_hit_impl,
+    libretro_ext_check_watch_hit_impl,
+
+    libretro_ext_get_dip_count_impl,
+    libretro_ext_get_dip_info_impl,
+    libretro_ext_set_dip_value_impl
 };
 
 extern "C" {
@@ -674,6 +1028,10 @@ extern "C" {
     {
         return &g_ext_api_v2;
     }
-}
 
+    LIBRETRO_EXT_EXPORT const libretro_ext_api_v3* libretro_ext_get_api_v3()
+    {
+        return &g_ext_api_v3;
+    }
+}
 #endif // LIBRETRO_EXT_HPP

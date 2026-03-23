@@ -963,6 +963,8 @@ bool retro_load_game(const struct retro_game_info *info)
    retro_load_ok = true;
    update_runtime_variables(true);
 
+   libretro_ext_set_memory_maps(environ_cb);
+
    return true;
 }
 
@@ -1022,7 +1024,7 @@ void *retro_get_memory_data(unsigned type)
    void *best_match1 = NULL;
    void *best_match2 = NULL;
    void *best_match3 = NULL;
-   int space_index   = 0;
+   static const int spaces_to_scan[] = { AS_PROGRAM, AS_DATA, AS_IO, AS_OPCODES };
 
    /* Eventually the RA cheat system can be updated to accommodate multiple memory
     * locations, but for now this does a pretty good job for MAME since most of the machines
@@ -1037,7 +1039,7 @@ void *retro_get_memory_data(unsigned type)
       memory_interface_enumerator iter(mame_machine_manager::instance()->machine()->root_device());
       for (device_memory_interface &memory : iter)
       {
-         for (space_index = 0; space_index < memory.num_spaces(); space_index++)
+         for (int space_index : spaces_to_scan)
          {
             if (memory.has_space(space_index))
             {
@@ -1069,7 +1071,7 @@ size_t retro_get_memory_size(unsigned type)
    size_t best_match1 = 0;
    size_t best_match2 = 0;
    size_t best_match3 = 0;
-   int space_index    = 0;
+   static const int spaces_to_scan[] = { AS_PROGRAM, AS_DATA, AS_IO, AS_OPCODES };
 
    if (     type == RETRO_MEMORY_SYSTEM_RAM
          && mame_machine_manager::instance() != NULL
@@ -1078,7 +1080,7 @@ size_t retro_get_memory_size(unsigned type)
       memory_interface_enumerator iter(mame_machine_manager::instance()->machine()->root_device());
       for (device_memory_interface &memory : iter)
       {
-         for (space_index = 0; space_index < memory.num_spaces(); space_index++)
+         for (int space_index : spaces_to_scan)
          {
             if (memory.has_space(space_index))
             {

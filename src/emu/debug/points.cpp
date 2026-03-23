@@ -17,7 +17,7 @@
 
 // #include "../osd/libretro/libretro-internal/libretro_ext.h"
 // Fuck that, forward declare it.
-void libretro_ext_record_watch_hit(const char *cpuTag, uint64_t pc, uint64_t address, uint32_t value, uint8_t access, uint8_t width, uint64_t totalCycles);
+extern void libretro_ext_record_watch_hit(const char *cpuTag, uint64_t pc, uint64_t address, uint32_t value, uint8_t access, uint8_t width, uint64_t totalCycles);
 
 //**************************************************************************
 //  DEBUG BREAKPOINT
@@ -381,6 +381,35 @@ void debug_watchpoint::triggered(read_or_write type, offs_t address, u64 data, u
 		}
 	}
 
+	const device_state_interface *state = nullptr;
+
+	// debug.console().printf("Setting triggered watchpoint\n");
+	m_debugInterface->set_triggered_watchpoint(this);
+
+	u64 pc = 0;
+	if (!state)
+		m_debugInterface->device().interface(state);
+	if (state)
+		pc = state->pc();
+
+	u8 const width_bytes = u8((size * unit_size) / 8);
+	
+	#ifdef __LIBRETRO__
+	// Record PC on Watchpoint hit
+	libretro_ext_record_watch_hit(
+		m_debugInterface->device().tag(),
+		pc,
+		address,
+		data,
+		u8(type),
+		width_bytes,
+		(uint64_t)m_debugInterface->device().execute().total_cycles()
+	);
+
+	return; // Don't break to the debugger, just record the hit and continue execution.
+	#endif // __LIBRETRO__
+
+
 	// halt in the debugger by default
 	bool was_stopped = debug.cpu().is_stopped();
 	debug.cpu().set_execution_stopped();
@@ -413,7 +442,6 @@ void debug_watchpoint::triggered(read_or_write type, offs_t address, u64 data, u
 								   (m_space.addr_width() + 3) / 4,
 								   address);
 
-		const device_state_interface *state;
 		if (debug.cpu().live_cpu() == &m_debugInterface->device() && m_debugInterface->device().interface(state))
 		{
 			debug.console().printf("%s (PC=%s)\n", buffer, state->state_string(STATE_GENPCBASE));
@@ -425,20 +453,7 @@ void debug_watchpoint::triggered(read_or_write type, offs_t address, u64 data, u
 			debug.cpu().set_execution_running();
 			debug.cpu().set_break_cpu(&m_debugInterface->device());
 		}
-		m_debugInterface->set_triggered_watchpoint(this);
-		
-		// Record PC on Watchpoint hit
-		libretro_ext_record_watch_hit(
-			m_debugInterface->device().tag(),
-			state->pc(),
-			address,
-			data,
-			u8(type),
-			size * unit_size,
-			(uint64_t)m_debugInterface->device().execute().total_cycles()
-		);
 	}
-
 	debug.cpu().set_within_instruction(false);
 }
 

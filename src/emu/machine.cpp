@@ -37,6 +37,7 @@
 
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
+#include "../osd/libretro/libretro-internal/libretro_ext.h" // Libretro extensions
 
 #include <ctime>
 
@@ -91,7 +92,9 @@ running_machine::running_machine(const machine_config &_config, machine_manager 
 		device.set_machine(*this);
 
 	// fetch core options
+	#ifndef __LIBRETRO__ // Gate this so non-libretro builds make debug optional
 	if (options().debug())
+	#endif // __LIBRETRO__ // Our builds always use debug features for dynamic patching.
 		debug_flags = (DEBUG_FLAG_ENABLED | DEBUG_FLAG_CALL_HOOK) | (DEBUG_FLAG_OSD_ENABLED);
 }
 

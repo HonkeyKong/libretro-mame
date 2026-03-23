@@ -18,6 +18,8 @@
 #ifndef LIBRETRO_EXT_H
 #define LIBRETRO_EXT_H
 
+#define LIBRETRO_EXT_DEBUG 1
+
 #include <string>
 #include <cstdint>
 
@@ -96,12 +98,38 @@ struct libretro_ext_watch_hit
     uint64_t pcHistory[256]{};
 };
 
+// DIP switch descriptor structs (versioned, fixed-size, C ABI safe)
+#define LIBRETRO_EXT_DIP_NAME_LEN      128
+#define LIBRETRO_EXT_DIP_PORT_TAG_LEN   64
+#define LIBRETRO_EXT_DIP_MAX_SETTINGS   64
+
+// One named setting (e.g. "Normal" = 0x04) within a DIP switch field.
+struct libretro_ext_dip_setting
+{
+    char     name[LIBRETRO_EXT_DIP_NAME_LEN]; // human-readable label
+    uint32_t value;                            // raw masked value for this setting
+};
+
+// Complete descriptor for one logical DIP switch field.
+struct libretro_ext_dip_info
+{
+    char     name[LIBRETRO_EXT_DIP_NAME_LEN];        // e.g. "Difficulty"
+    char     port_tag[LIBRETRO_EXT_DIP_PORT_TAG_LEN]; // e.g. ":DSWB"
+    uint32_t mask;                                    // bit mask within the port
+    uint32_t current_value;                           // current value (within mask)
+    uint32_t default_value;                           // default value (within mask)
+    uint32_t setting_count;                           // number of valid entries in settings[]
+    libretro_ext_dip_setting settings[LIBRETRO_EXT_DIP_MAX_SETTINGS];
+};
+
 extern uint64_t g_extFrameCounter;
 extern libretro_ext_watch_hit g_extLastWatchHit;
 extern std::vector<libretro_ext_watch_rule> g_extWatchRules;
 extern std::unordered_map<std::string, libretro_ext_pc_ring> g_extPcHistory;
 
 void libretro_ext_record_pc(const char* cpuTag, uint64_t pc);
+
+void libretro_ext_set_memory_maps(retro_environment_t environ_cb);
 
 void libretro_ext_record_watch_hit(const char* cpuTag,
                                    uint64_t pc,
@@ -111,59 +139,6 @@ void libretro_ext_record_watch_hit(const char* cpuTag,
                                    uint8_t width,
                                    uint64_t totalCycles);
 
-
-static void libretro_ext_check_watch_hit(const char* cpuTag,
-                                uint64_t pc,
-                                uint64_t address,
-                                uint32_t value,
-                                uint8_t access,
-                                uint8_t width,
-                                uint64_t totalCycles)
-{
-    if (!cpuTag)
-        return;
-
-    for (const auto& rule : g_extWatchRules)
-    {
-        if (!rule.enabled)
-            continue;
-        if (rule.cpuTag != cpuTag)
-            continue;
-        if (!(rule.access & access))
-            continue;
-        if (rule.width && rule.width != width)
-            continue;
-        if (address < rule.start || address > rule.end)
-            continue;
-
-        g_extLastWatchHit = {};
-        g_extLastWatchHit.hit = true;
-        std::strncpy(g_extLastWatchHit.cpuTag, cpuTag, sizeof(g_extLastWatchHit.cpuTag) - 1);
-        g_extLastWatchHit.address = address;
-        g_extLastWatchHit.pc = pc;
-        g_extLastWatchHit.frame = g_extFrameCounter;
-        g_extLastWatchHit.totalCycles = totalCycles;
-        g_extLastWatchHit.value = value;
-        g_extLastWatchHit.access = access;
-        g_extLastWatchHit.width = width;
-
-        const auto it = g_extPcHistory.find(cpuTag);
-        if (it != g_extPcHistory.end())
-        {
-            const libretro_ext_pc_ring& ring = it->second;
-            const uint32_t count = ring.filled ? 256 : ring.head;
-            g_extLastWatchHit.historyCount = count;
-
-            for (uint32_t i = 0; i < count; i++)
-            {
-                uint32_t idx = ring.filled ? ((ring.head + i) % 256) : i;
-                g_extLastWatchHit.pcHistory[i] = ring.pcs[idx];
-            }
-        }
-
-        break;
-    }
-}
 
 struct libretro_ext_api_v1
 {
@@ -222,9 +197,61 @@ struct libretro_ext_api_v2
     uint64_t (*get_time_attoseconds)();
 
     // CPU cycle counters by tag (":maincpu", ":audiocpu", etc.)
-    uint64_t (*get_cpu_total_cycles)(const char* cpu_tag);
+    // uint64_t (*get_cpu_total_cycles)(const char* cpu_tag);
     uint64_t (*get_cpu_total_cycles_by_tag)(const char* cpu_tag);
-    // Remove duplicate: uint32_t struct_size;
+
+    // Watchpoint API
+    void (*clear_watch_rules)();
+    void (*add_watch_rule)(const char* cpuTag, uint64_t start, uint64_t end, uint8_t access, uint8_t width);
+    bool (*get_last_watch_hit)(libretro_ext_watch_hit* outHit);
+    void (*clear_last_watch_hit)();
+    void (*check_watch_hit)(const char* cpuTag, uint64_t pc, uint64_t address, uint32_t value, uint8_t access, uint8_t width, uint64_t totalCycles);
+};
+
+struct libretro_ext_api_v3
+{
+    uint32_t abi_version   = 3;
+    uint32_t sizeof_struct = sizeof(libretro_ext_api_v3);
+
+    // All v2 fields reproduced (self-contained; never remove or reorder)
+    const char* (*get_driver_name)();
+    int         (*get_cpu_count)();
+    const char* (*get_cpu_tag)(int cpu_index);
+    uint64_t    (*get_cpu_pc)(int cpu_index);
+
+    uint8_t  (*read_u8)(const char* cpu_tag, const char* space, uint64_t addr);
+    uint16_t (*read_u16)(const char* cpu_tag, const char* space, uint64_t addr);
+    uint32_t (*read_u32)(const char* cpu_tag, const char* space, uint64_t addr);
+
+    void (*write_u8)(const char* cpu_tag, const char* space, uint64_t addr, uint8_t v);
+    void (*write_u16)(const char* cpu_tag, const char* space, uint64_t addr, uint16_t v);
+    void (*write_u32)(const char* cpu_tag, const char* space, uint64_t addr, uint32_t v);
+
+    int         (*get_region_count)();
+    const char* (*get_region_tag)(int index);
+    uint64_t    (*get_region_size)(const char* region_tag);
+
+    uint64_t (*read_region)(const char* region_tag, uint64_t offset, void* dst, uint64_t bytes);
+    uint64_t (*write_region)(const char* region_tag, uint64_t offset, const void* src, uint64_t bytes);
+
+    uint64_t (*get_frame_number)();
+    uint64_t (*get_time_attoseconds)();
+    uint64_t (*get_cpu_total_cycles_by_tag)(const char* cpu_tag);
+
+    void (*clear_watch_rules)();
+    void (*add_watch_rule)(const char* cpuTag, uint64_t start, uint64_t end, uint8_t access, uint8_t width);
+    bool (*get_last_watch_hit)(libretro_ext_watch_hit* outHit);
+    void (*clear_last_watch_hit)();
+    void (*check_watch_hit)(const char* cpuTag, uint64_t pc, uint64_t address, uint32_t value, uint8_t access, uint8_t width, uint64_t totalCycles);
+
+    // DIP switch API
+    // Returns the number of DIP switch fields in the running machine (0 if no machine).
+    int  (*get_dip_count)();
+    // Fills *out with the descriptor for DIP field at index.  Returns false on bad index.
+    bool (*get_dip_info)(int index, libretro_ext_dip_info* out);
+    // Sets the current value of DIP field at index.  value is automatically masked.
+    // Returns false if the machine is not running or index is out of range.
+    bool (*set_dip_value)(int index, uint32_t value);
 };
 
 static void invalidate_region_cache();
@@ -239,6 +266,13 @@ static void libretro_ext_write_u16_impl(const char* cpu_tag, const char* space_n
 static void libretro_ext_write_u32_impl(const char* cpu_tag, const char* space_name, uint64_t addr, uint32_t v);
 static void libretro_ext_add_exec_trigger_impl(const char* cpuTag, uint64_t pcStart, uint64_t pcEnd,
                                       bool oneShot, bool disableAfterHit);
+static void libretro_ext_check_watch_hit_impl(const char* cpuTag,
+                                uint64_t pc,
+                                uint64_t address,
+                                uint32_t value,
+                                uint8_t access,
+                                uint8_t width,
+                                uint64_t totalCycles);
 
 static inline void check_exec_triggers(const char* cpuTag, uint32_t pc);
 
@@ -280,9 +314,14 @@ static device_t* libretro_ext_find_device(running_machine& mach, const char* tag
 
 static address_space* get_space_by_tag(running_machine& mach, const char* cpu_tag, const char* space_name);
 
+static int  libretro_ext_get_dip_count_impl();
+static bool libretro_ext_get_dip_info_impl(int index, libretro_ext_dip_info* out);
+static bool libretro_ext_set_dip_value_impl(int index, uint32_t value);
+
 extern "C" {
     LIBRETRO_EXT_EXPORT const libretro_ext_api_v1* libretro_ext_get_api_v1();
     LIBRETRO_EXT_EXPORT const libretro_ext_api_v2* libretro_ext_get_api_v2();
+    LIBRETRO_EXT_EXPORT const libretro_ext_api_v3* libretro_ext_get_api_v3();
 }
 
 #endif // LIBRETRO_EXT_H

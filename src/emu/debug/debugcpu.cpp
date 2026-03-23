@@ -32,7 +32,7 @@
 const size_t debugger_cpu::NUM_TEMP_VARIABLES = 10;
 
 // Forward declare our extended function
-void libretro_ext_record_pc(const char *cpuTag, uint64_t pc);
+extern void libretro_ext_record_pc(const char *cpuTag, uint64_t pc);
 
 /*-------------------------------------------------
     constructor - initialize the CPU
