@@ -23,7 +23,6 @@ ABI rules:
 #endif // LIBRETRO_EXT
 
 #include "emu.h"
-// #include "screen.h"
 #include "libretro_ext.h"
 #include "../frontend/mame/mame.h"
 
@@ -38,6 +37,8 @@ ABI rules:
 #else
   #define LIBRETRO_EXT_EXPORT extern "C" __attribute__((visibility("default")))
 #endif
+
+bool g_extDebugExtensionsEnabled = false;
 
 extern retro_log_printf_t log_cb;
 
@@ -58,6 +59,64 @@ static std::deque<std::string> g_memoryMapAddrspaces;
 static running_machine* g_dipLastMachine = nullptr;
 static std::vector<ioport_field*> g_dipFields;
 
+static void libretro_ext_clear_native_watchpoints_impl()
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return;
+
+    for (device_t& dev : device_enumerator(mach->root_device()))
+    {
+        if (dev.debug())
+            dev.debug()->watchpoint_clear_all();
+    }
+}
+
+static void libretro_ext_set_debug_extensions_enabled_impl(bool enabled)
+{
+    if (g_extDebugExtensionsEnabled == enabled)
+        return;
+
+    g_extDebugExtensionsEnabled = enabled;
+
+    if (enabled)
+    {
+        running_machine* mach = libretro_ext_machine();
+        if (mach)
+        {
+            bool has_debug_objects = false;
+            for (device_t& dev : device_enumerator(mach->root_device()))
+            {
+                if (dev.debug())
+                {
+                    has_debug_objects = true;
+                    break;
+                }
+            }
+
+            if (!has_debug_objects)
+            {
+                log_cb(RETRO_LOG_WARN,
+                       "libretro_ext: debug extensions enabled after machine start; device debug objects are unavailable. Enable before retro_load_game/reload content for watchpoints.\n");
+            }
+        }
+
+        return;
+    }
+
+    g_extPcHistory.clear();
+    g_extWatchRules.clear();
+    std::memset(&g_extLastWatchHit, 0, sizeof(g_extLastWatchHit));
+    std::memset(&g_lastExecHit, 0, sizeof(g_lastExecHit));
+    g_execTriggers.clear();
+    libretro_ext_clear_native_watchpoints_impl();
+}
+
+static bool libretro_ext_get_debug_extensions_enabled_impl()
+{
+    return g_extDebugExtensionsEnabled;
+}
+
 // Lazy way of seeing all devices attached to the running machine
 static void log_all_devices(running_machine& mach)
 {
@@ -68,7 +127,7 @@ static void log_all_devices(running_machine& mach)
 
 void libretro_ext_record_pc(const char* cpuTag, uint64_t pc)
 {
-    if (!cpuTag)
+    if (!g_extDebugExtensionsEnabled || !cpuTag)
         return;
 
     g_extPcHistory[cpuTag].push(pc);
@@ -82,7 +141,7 @@ static void libretro_ext_check_watch_hit(const char* cpuTag,
                                 uint8_t width,
                                 uint64_t totalCycles)
 {
-    if (!cpuTag)
+    if (!g_extDebugExtensionsEnabled || !cpuTag)
         return;
 
     for (const auto& rule : g_extWatchRules)
@@ -551,6 +610,9 @@ static uint64_t libretro_ext_get_cpu_pc_impl(int cpu_index)
 
 static inline void check_exec_triggers(const char* cpuTag, uint64_t pc)
 {
+    if (!g_extDebugExtensionsEnabled)
+        return;
+
     for (auto& t : g_execTriggers)
     {
         if (!t.enabled)
@@ -579,6 +641,9 @@ static void ext_clear_exec_triggers_impl()
 static void libretro_ext_add_exec_trigger_impl(const char* cpuTag, uint64_t pcStart, uint64_t pcEnd,
                                       bool oneShot, bool disableAfterHit)
 {
+    if (!g_extDebugExtensionsEnabled)
+        return;
+
     if (!cpuTag || !cpuTag[0])
         return;
 
@@ -608,6 +673,9 @@ static void libretro_ext_clear_last_exec_hit_impl()
 
 static void libretro_ext_check_exec_triggers(device_t& dev, uint64_t pc)
 {
+    if (!g_extDebugExtensionsEnabled)
+        return;
+
     const char* tag = dev.tag();
     if (!tag)
         return;
@@ -760,6 +828,7 @@ void libretro_ext_set_memory_maps(retro_environment_t environ_cb)
 static void libretro_ext_clear_watch_rules_impl()
 {
     g_extWatchRules.clear();
+    libretro_ext_clear_native_watchpoints_impl();
 }
 
 static void libretro_ext_add_watch_rule_impl(const char* cpuTag,
@@ -768,6 +837,9 @@ static void libretro_ext_add_watch_rule_impl(const char* cpuTag,
                                              uint8_t access,
                                              uint8_t width)
 {
+    if (!g_extDebugExtensionsEnabled)
+        return;
+
     if (!cpuTag || !cpuTag[0])
         return;
 
@@ -793,7 +865,9 @@ static void libretro_ext_add_watch_rule_impl(const char* cpuTag,
 
     if (!dev->debug())
     {
-        log_cb(RETRO_LOG_INFO, "libretro_ext: device %s has no debug object\n", cpuTag);
+        log_cb(RETRO_LOG_WARN,
+               "libretro_ext: device %s has no debug object; watchpoints require debug extensions enabled before retro_load_game/reload content.\n",
+               cpuTag);
         return;
     }
 
@@ -1018,6 +1092,49 @@ static const libretro_ext_api_v3 g_ext_api_v3 = {
     libretro_ext_set_dip_value_impl
 };
 
+static const libretro_ext_api_v4 g_ext_api_v4 = {
+    4,
+    sizeof(libretro_ext_api_v4),
+
+    libretro_ext_get_driver_name_impl,
+    libretro_ext_cpu_count_impl,
+    libretro_ext_get_cpu_tag_impl,
+    libretro_ext_get_cpu_pc_impl,
+
+    libretro_ext_read_u8_impl,
+    libretro_ext_read_u16_impl,
+    libretro_ext_read_u32_impl,
+
+    libretro_ext_write_u8_impl,
+    libretro_ext_write_u16_impl,
+    libretro_ext_write_u32_impl,
+
+    libretro_ext_get_region_count_impl,
+    libretro_ext_get_region_tag_impl,
+    libretro_ext_get_region_size_impl,
+
+    libretro_ext_read_region_impl,
+    libretro_ext_write_region_impl,
+
+    libretro_ext_get_frame_number_impl,
+    libretro_ext_get_time_attoseconds_impl,
+
+    libretro_ext_get_cpu_total_cycles_by_tag_impl,
+
+    libretro_ext_clear_watch_rules_impl,
+    libretro_ext_add_watch_rule_impl,
+    libretro_ext_get_last_watch_hit_impl,
+    libretro_ext_clear_last_watch_hit_impl,
+    libretro_ext_check_watch_hit_impl,
+
+    libretro_ext_get_dip_count_impl,
+    libretro_ext_get_dip_info_impl,
+    libretro_ext_set_dip_value_impl,
+
+    libretro_ext_set_debug_extensions_enabled_impl,
+    libretro_ext_get_debug_extensions_enabled_impl
+};
+
 extern "C" {
     LIBRETRO_EXT_EXPORT const libretro_ext_api_v1* libretro_ext_get_api_v1()
     {
@@ -1032,6 +1149,11 @@ extern "C" {
     LIBRETRO_EXT_EXPORT const libretro_ext_api_v3* libretro_ext_get_api_v3()
     {
         return &g_ext_api_v3;
+    }
+
+    LIBRETRO_EXT_EXPORT const libretro_ext_api_v4* libretro_ext_get_api_v4()
+    {
+        return &g_ext_api_v4;
     }
 }
 #endif // LIBRETRO_EXT_HPP

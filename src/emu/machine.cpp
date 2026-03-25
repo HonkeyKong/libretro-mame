@@ -59,6 +59,7 @@ osd_interface &running_machine::osd() const
 //-------------------------------------------------
 //  running_machine - constructor
 //-------------------------------------------------
+extern bool g_extDebugExtensionsEnabled;
 
 running_machine::running_machine(const machine_config &_config, machine_manager &manager)
 	: m_side_effects_disabled(0)
@@ -92,9 +93,11 @@ running_machine::running_machine(const machine_config &_config, machine_manager 
 		device.set_machine(*this);
 
 	// fetch core options
-	#ifndef __LIBRETRO__ // Gate this so non-libretro builds make debug optional
+	#ifdef __LIBRETRO__ // Gate this so we can toggle debug extensions on/off
+	if(g_extDebugExtensionsEnabled)
+	#else // Check the regular debug option if we're not in Libretro mode
 	if (options().debug())
-	#endif // __LIBRETRO__ // Our builds always use debug features for dynamic patching.
+	#endif // __LIBRETRO__
 		debug_flags = (DEBUG_FLAG_ENABLED | DEBUG_FLAG_CALL_HOOK) | (DEBUG_FLAG_OSD_ENABLED);
 }
 

@@ -559,15 +559,11 @@ void device_t::start()
 	notify_clock_changed();
 
 	// if we're debugging, create a device_debug object
-	// #ifndef __LIBRETRO__ // Gate this so non-libretro builds make debug optional
 	if ((machine().debug_flags & DEBUG_FLAG_ENABLED) != 0)
 	{
-	// #endif // __LIBRETRO__ // Our builds always use debug features for dynamic patching.
 		m_debug = std::make_unique<device_debug>(*this);
 		debug_setup();
-	// #ifndef __LIBRETRO__ // Gate this so non-libretro builds make debug optional
 	}
-	// #endif // __LIBRETRO__ // Our builds always use debug features for dynamic patching.
 
 	// register our save states
 	save_item(NAME(m_unscaled_clock));

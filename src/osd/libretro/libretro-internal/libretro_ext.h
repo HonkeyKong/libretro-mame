@@ -254,6 +254,51 @@ struct libretro_ext_api_v3
     bool (*set_dip_value)(int index, uint32_t value);
 };
 
+struct libretro_ext_api_v4
+{
+    uint32_t abi_version   = 4;
+    uint32_t sizeof_struct = sizeof(libretro_ext_api_v4);
+
+    // All v3 fields reproduced (self-contained; never remove or reorder)
+    const char* (*get_driver_name)();
+    int         (*get_cpu_count)();
+    const char* (*get_cpu_tag)(int cpu_index);
+    uint64_t    (*get_cpu_pc)(int cpu_index);
+
+    uint8_t  (*read_u8)(const char* cpu_tag, const char* space, uint64_t addr);
+    uint16_t (*read_u16)(const char* cpu_tag, const char* space, uint64_t addr);
+    uint32_t (*read_u32)(const char* cpu_tag, const char* space, uint64_t addr);
+
+    void (*write_u8)(const char* cpu_tag, const char* space, uint64_t addr, uint8_t v);
+    void (*write_u16)(const char* cpu_tag, const char* space, uint64_t addr, uint16_t v);
+    void (*write_u32)(const char* cpu_tag, const char* space, uint64_t addr, uint32_t v);
+
+    int         (*get_region_count)();
+    const char* (*get_region_tag)(int index);
+    uint64_t    (*get_region_size)(const char* region_tag);
+
+    uint64_t (*read_region)(const char* region_tag, uint64_t offset, void* dst, uint64_t bytes);
+    uint64_t (*write_region)(const char* region_tag, uint64_t offset, const void* src, uint64_t bytes);
+
+    uint64_t (*get_frame_number)();
+    uint64_t (*get_time_attoseconds)();
+    uint64_t (*get_cpu_total_cycles_by_tag)(const char* cpu_tag);
+
+    void (*clear_watch_rules)();
+    void (*add_watch_rule)(const char* cpuTag, uint64_t start, uint64_t end, uint8_t access, uint8_t width);
+    bool (*get_last_watch_hit)(libretro_ext_watch_hit* outHit);
+    void (*clear_last_watch_hit)();
+    void (*check_watch_hit)(const char* cpuTag, uint64_t pc, uint64_t address, uint32_t value, uint8_t access, uint8_t width, uint64_t totalCycles);
+
+    int  (*get_dip_count)();
+    bool (*get_dip_info)(int index, libretro_ext_dip_info* out);
+    bool (*set_dip_value)(int index, uint32_t value);
+
+    // Debug extension switch. Defaults to false and can be toggled at runtime.
+    void (*set_debug_extensions_enabled)(bool enabled);
+    bool (*get_debug_extensions_enabled)();
+};
+
 static void invalidate_region_cache();
 static void ext_clear_exec_triggers_impl();
 static void log_all_devices(running_machine& mach);
@@ -261,6 +306,7 @@ static void libretro_ext_clear_last_exec_hit_impl();
 static void build_region_cache(running_machine& mach);
 static void libretro_ext_install_exec_hooks_if_needed();
 static void libretro_ext_check_exec_triggers(device_t& dev, uint64_t pc);
+static void libretro_ext_set_debug_extensions_enabled_impl(bool enabled);
 static void libretro_ext_write_u8_impl(const char* cpu_tag, const char* space_name, uint64_t addr, uint8_t v);
 static void libretro_ext_write_u16_impl(const char* cpu_tag, const char* space_name, uint64_t addr, uint16_t v);
 static void libretro_ext_write_u32_impl(const char* cpu_tag, const char* space_name, uint64_t addr, uint32_t v);
@@ -285,6 +331,7 @@ static const char* libretro_ext_get_region_tag_impl(int index);
 static const char* libretro_ext_get_cpu_tag_impl(int cpu_index);
 
 static bool libretro_ext_get_last_exec_hit_impl(libretro_ext_exec_hit* outHit);
+static bool libretro_ext_get_debug_extensions_enabled_impl();
 static bool libretro_ext_get_cpu_by_index(running_machine& mach, int cpu_index, device_t*& out_dev);
 
 static uint8_t libretro_ext_read_u8_impl(const char* cpu_tag, const char* space_name, uint64_t addr);
@@ -322,6 +369,7 @@ extern "C" {
     LIBRETRO_EXT_EXPORT const libretro_ext_api_v1* libretro_ext_get_api_v1();
     LIBRETRO_EXT_EXPORT const libretro_ext_api_v2* libretro_ext_get_api_v2();
     LIBRETRO_EXT_EXPORT const libretro_ext_api_v3* libretro_ext_get_api_v3();
+    LIBRETRO_EXT_EXPORT const libretro_ext_api_v4* libretro_ext_get_api_v4();
 }
 
 #endif // LIBRETRO_EXT_H
