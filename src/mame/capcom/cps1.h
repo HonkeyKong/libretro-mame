@@ -155,6 +155,7 @@ public:
 	void init_sf2rb();
 	void init_sf2rb2();
 	void init_sf2thndr();
+	void init_sf2hf_timing();
 	void init_sf2hack();
 	void init_sf2rk();
 	void init_sf2dongb();
@@ -240,6 +241,11 @@ protected:
 	// game-specific
 	uint16_t m_sf2ceblp_prot = 0;
 	uint16_t m_pang3b4_prot = 0;
+	bool m_sf2hf_timing_calibration = false;
+	uint64_t m_sf2hf_last_vblank_cycles = 0;
+	uint64_t m_sf2hf_sample_cycles = 0;
+	uint32_t m_sf2hf_vblank_frame = 0;
+	uint32_t m_sf2hf_sample_frames = 0;
 
 	/* video-related */
 	tilemap_t *m_bg_tilemap[3]{};
