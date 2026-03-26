@@ -2145,6 +2145,7 @@ inline uint16_t *cps_state::cps1_base(int offset, int boundary)
 
 void cps_state::cps1_cps_a_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 {
+	sf2hf_steal_cycles(SF2HF_TIMING_CPS_REG_WAIT_CYCLES);
 	data = COMBINE_DATA(&m_cps_a_regs[offset]);
 
 	// The main CPU writes the palette to gfxram, and the CPS-B custom copies it
@@ -2166,7 +2167,6 @@ void cps_state::cps1_cps_a_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 
 uint16_t cps_state::cps1_cps_b_r(offs_t offset)
 {
-	sf2hf_steal_cycles(SF2HF_TIMING_CPS_REG_WAIT_CYCLES);
 	// Some games interrogate a couple of registers on bootup.
 	// These are CPS1 board B self test checks. They wander from game to game.
 	if (offset == m_game_config->cpsb_addr / 2)
@@ -2214,7 +2214,6 @@ uint16_t cps_state::cps1_cps_b_r(offs_t offset)
 
 void cps_state::cps1_cps_b_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 {
-	sf2hf_steal_cycles(SF2HF_TIMING_CPS_REG_WAIT_CYCLES);
 	data = COMBINE_DATA(&m_cps_b_regs[offset]);
 
 	// raster counters for cps2 & ganbare
