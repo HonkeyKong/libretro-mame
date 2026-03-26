@@ -252,6 +252,11 @@ Stephh's log (2006.09.20) :
 #include "kabuki.h"
 #include "speaker.h"
 
+namespace
+{
+constexpr double SF2HF_TIMING_CLOCK_SCALE = (47.667 / 51.940) * (49.600 / 51.940);
+}
+
 uint16_t cps_state::cps1_dsw_r(offs_t offset)
 {
 	static const char *const dswname[] = { "IN0", "DSWA", "DSWB", "DSWC" };
@@ -3920,7 +3925,6 @@ MACHINE_START_MEMBER(cps_state,common)
 	save_item(NAME(m_sf2hf_timing_calibration));
 	save_item(NAME(m_sf2hf_last_vblank_cycles));
 	save_item(NAME(m_sf2hf_sample_cycles));
-	save_item(NAME(m_sf2hf_sample_stolen_cycles));
 	save_item(NAME(m_sf2hf_vblank_frame));
 	save_item(NAME(m_sf2hf_sample_frames));
 	save_item(NAME(m_sf2hf_timing_confirm_logged));
@@ -14874,10 +14878,10 @@ void cps_state::init_sf2hf_timing()
 	m_sf2hf_timing_calibration = true;
 	m_sf2hf_last_vblank_cycles = 0;
 	m_sf2hf_sample_cycles = 0;
-	m_sf2hf_sample_stolen_cycles = 0;
 	m_sf2hf_vblank_frame = 0;
 	m_sf2hf_sample_frames = 0;
 	m_sf2hf_timing_confirm_logged = false;
+	m_maincpu->set_clock_scale(SF2HF_TIMING_CLOCK_SCALE);
 }
 
 uint16_t cps_state::ganbare_ram_r(offs_t offset, uint16_t mem_mask)
