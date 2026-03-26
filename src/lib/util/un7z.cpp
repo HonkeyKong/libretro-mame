@@ -353,13 +353,13 @@ std::error_condition m7z_file_impl::initialize() noexcept
 		if (err)
 			return err;
 		m_archive_stream.file = osd_file_read(std::move(file));
-			}
+	}
 	else if (!m_archive_stream.length)
 	{
 		std::error_condition const err = m_archive_stream.file->length(m_archive_stream.length);
 		if (err)
 		{
-			osd_printf_verbose(
+			osd_printf_error(
 					"un7z: error getting length of archive file %s (%s:%d %s)\n",
 					m_filename, err.category().name(), err.value(), err.message());
 			return err;
@@ -413,7 +413,6 @@ void m7z_file_impl::close(ptr &&archive) noexcept
 		if (cachenum == s_cache.size())
 		{
 			cachenum--;
-			osd_printf_verbose("un7z: removing %s from cache to make space\n", s_cache[cachenum]->m_filename);
 			s_cache[cachenum].reset();
 		}
 

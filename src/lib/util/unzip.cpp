@@ -245,13 +245,13 @@ private:
 				osd_printf_error("unzip: not enough memory to open archive file %s\n", m_filename);
 				return std::errc::not_enough_memory;
 			}
-					}
+		}
 		else if (!m_length)
 		{
 			auto const filerr = m_file->length(m_length);
 			if (filerr)
 			{
-				osd_printf_verbose(
+				osd_printf_error(
 						"unzip: error getting length of archive file %s (%s:%d %s)\n",
 						m_filename, filerr.category().name(), filerr.value(), filerr.message());
 				return filerr;
