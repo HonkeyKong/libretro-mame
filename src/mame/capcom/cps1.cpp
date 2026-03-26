@@ -254,7 +254,7 @@ Stephh's log (2006.09.20) :
 
 namespace
 {
-constexpr double SF2HF_TIMING_CLOCK_SCALE = 47.667 / 51.940;
+constexpr double SF2HF_TIMING_CLOCK_SCALE = (47.667 / 51.940) * (49.600 / 51.940);
 }
 
 uint16_t cps_state::cps1_dsw_r(offs_t offset)
