@@ -3104,7 +3104,7 @@ void cps_state::screen_vblank_cps1(int state)
 
 					if (!m_sf2hf_timing_confirm_logged)
 					{
-						machine().logerror("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
+						osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
 							m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1,
 							m_sf2hf_vblank_frame,
 							avg_frame_cycles,

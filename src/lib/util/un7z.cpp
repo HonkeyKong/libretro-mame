@@ -153,8 +153,7 @@ public:
 				using std::swap;
 				ptr result;
 				swap(s_cache[cachenum], result);
-				osd_printf_verbose("un7z: found %s in cache\n", filename);
-				return result;
+								return result;
 			}
 		}
 		return ptr();
@@ -354,8 +353,7 @@ std::error_condition m7z_file_impl::initialize() noexcept
 		if (err)
 			return err;
 		m_archive_stream.file = osd_file_read(std::move(file));
-		osd_printf_verbose("un7z: opened archive file %s\n", m_filename);
-	}
+			}
 	else if (!m_archive_stream.length)
 	{
 		std::error_condition const err = m_archive_stream.file->length(m_archive_stream.length);
@@ -402,8 +400,7 @@ void m7z_file_impl::close(ptr &&archive) noexcept
 	if (archive && !archive->m_filename.empty())
 	{
 		// close the open files
-		osd_printf_verbose("un7z: closing archive file %s and sending to cache\n", archive->m_filename);
-		archive->m_archive_stream.file.reset();
+				archive->m_archive_stream.file.reset();
 
 		// find the first nullptr entry in the cache
 		std::lock_guard<std::mutex> guard(s_cache_mutex);
@@ -464,8 +461,7 @@ std::error_condition m7z_file_impl::decompress(void *buffer, std::size_t length)
 			return err;
 		}
 		m_archive_stream.file = osd_file_read(std::move(file));
-		osd_printf_verbose("un7z: reopened archive file %s\n", m_filename);
-	}
+			}
 
 	std::size_t offset(0);
 	std::size_t out_size_processed(0);

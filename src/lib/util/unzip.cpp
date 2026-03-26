@@ -99,8 +99,7 @@ public:
 				using std::swap;
 				ptr result;
 				swap(s_cache[cachenum], result);
-				osd_printf_verbose("unzip: found %s in cache\n", filename);
-				return result;
+								return result;
 			}
 		}
 		return ptr();
@@ -170,7 +169,6 @@ public:
 			cd_remaining -= read_length;
 			cd_offs += read_length;
 		}
-		osd_printf_verbose("unzip: read %s central directory\n", m_filename);
 
 		return std::error_condition();
 	}
@@ -247,8 +245,7 @@ private:
 				osd_printf_error("unzip: not enough memory to open archive file %s\n", m_filename);
 				return std::errc::not_enough_memory;
 			}
-			osd_printf_verbose("unzip: opened archive file %s\n", m_filename);
-		}
+					}
 		else if (!m_length)
 		{
 			auto const filerr = m_file->length(m_length);
@@ -721,8 +718,7 @@ void zip_file_impl::close(ptr &&zip) noexcept
 	if (zip && !zip->m_filename.empty())
 	{
 		// close the open files
-		osd_printf_verbose("unzip: closing archive file %s and sending to cache\n", zip->m_filename);
-		zip->m_file.reset();
+				zip->m_file.reset();
 
 		// find the first nullptr entry in the cache
 		std::lock_guard<std::mutex> guard(s_cache_mutex);
@@ -735,8 +731,7 @@ void zip_file_impl::close(ptr &&zip) noexcept
 		if (cachenum == s_cache.size())
 		{
 			cachenum--;
-			osd_printf_verbose("unzip: removing %s from cache to make space\n", s_cache[cachenum]->m_filename);
-			s_cache[cachenum].reset();
+						s_cache[cachenum].reset();
 		}
 
 		// move everyone else down and place us at the top
@@ -1004,7 +999,6 @@ std::error_condition zip_file_impl::read_ecd() noexcept
 		// if we found it, fill out the data
 		if (offset >= 0)
 		{
-			osd_printf_verbose("unzip: found %s ECD at %d\n", m_filename, offset);
 
 			// extract ECD info
 			ecd_reader const ecd_rd(buffer.get() + offset);
@@ -1018,8 +1012,7 @@ std::error_condition zip_file_impl::read_ecd() noexcept
 			// is the file too small to contain a ZIP64 ECD locator?
 			if ((m_length - buflen + offset) < ecd64_locator_reader::minimum_length())
 			{
-				osd_printf_verbose("unzip: %s too small to contain ZIP64 ECD locator\n", m_filename);
-				return std::error_condition();
+								return std::error_condition();
 			}
 
 			// try to read the ZIP64 ECD locator
@@ -1045,8 +1038,7 @@ std::error_condition zip_file_impl::read_ecd() noexcept
 			ecd64_locator_reader const ecd64_loc_rd(buffer.get());
 			if (!ecd64_loc_rd.signature_correct())
 			{
-				osd_printf_verbose("unzip: %s has no ZIP64 ECD locator\n", m_filename);
-				return std::error_condition();
+								return std::error_condition();
 			}
 
 			// check that the ZIP64 ECD is in this segment (assuming this segment is the last segment)
@@ -1092,7 +1084,6 @@ std::error_condition zip_file_impl::read_ecd() noexcept
 						m_filename, ecd64_rd.version_needed() / 10, ecd64_rd.version_needed() % 10);
 				return archive_file::error::UNSUPPORTED;
 			}
-			osd_printf_verbose("unzip: found %s ZIP64 ECD\n", m_filename);
 
 			// extract ZIP64 ECD info
 			m_ecd.disk_number          = ecd64_rd.this_disk_no();
