@@ -247,8 +247,8 @@ protected:
 	void varthb3_map(address_map &map) ATTR_COLD;
 
 	// game-specific
-	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_CYCLES = 4;
-	static constexpr int SF2HF_TIMING_CPS_REG_WAIT_CYCLES = 1;
+	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_CYCLES = 320;
+	static constexpr int SF2HF_TIMING_CPS_REG_WAIT_CYCLES = 80;
 	uint16_t m_sf2ceblp_prot = 0;
 	uint16_t m_pang3b4_prot = 0;
 	bool m_sf2hf_timing_calibration = false;
