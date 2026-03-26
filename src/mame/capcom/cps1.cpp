@@ -14880,6 +14880,7 @@ void cps_state::init_sf2hf_timing()
 	m_sf2hf_vblank_frame = 0;
 	m_sf2hf_sample_frames = 0;
 	m_maincpu->set_clock_scale(SF2HF_TIMING_CLOCK_SCALE);
+	machine().logerror("sf2hf timing init scale=%.9f avg_log_frames=300\n", SF2HF_TIMING_CLOCK_SCALE);
 }
 
 uint16_t cps_state::ganbare_ram_r(offs_t offset, uint16_t mem_mask)
