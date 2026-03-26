@@ -239,11 +239,13 @@ protected:
 	void varthb3_map(address_map &map) ATTR_COLD;
 
 	// game-specific
+	static constexpr int SF2HF_TIMING_STEAL_CYCLES_PER_FRAME = 9493;
 	uint16_t m_sf2ceblp_prot = 0;
 	uint16_t m_pang3b4_prot = 0;
 	bool m_sf2hf_timing_calibration = false;
 	uint64_t m_sf2hf_last_vblank_cycles = 0;
 	uint64_t m_sf2hf_sample_cycles = 0;
+	uint64_t m_sf2hf_sample_stolen_cycles = 0;
 	uint32_t m_sf2hf_vblank_frame = 0;
 	uint32_t m_sf2hf_sample_frames = 0;
 	bool m_sf2hf_timing_confirm_logged = false;

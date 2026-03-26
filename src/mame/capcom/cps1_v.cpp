@@ -3100,42 +3100,46 @@ void cps_state::screen_vblank_cps1(int state)
 			if (m_sf2hf_last_vblank_cycles)
 			{
 				m_sf2hf_sample_cycles += total_cycles - m_sf2hf_last_vblank_cycles;
+				m_sf2hf_sample_stolen_cycles += SF2HF_TIMING_STEAL_CYCLES_PER_FRAME;
 				m_sf2hf_sample_frames++;
 
 				if (m_sf2hf_sample_frames >= 300)
 				{
 					const double avg_frame_cycles = double(m_sf2hf_sample_cycles) / m_sf2hf_sample_frames;
+					const double avg_stolen_cycles = double(m_sf2hf_sample_stolen_cycles) / m_sf2hf_sample_frames;
+					const double target_frame_cycles = double(m_maincpu->clock()) / m_screen->frame_period().as_hz();
 
 					if (!m_sf2hf_timing_confirm_logged)
 					{
 						const unsigned start_frame = m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1;
 						const unsigned end_frame = m_sf2hf_vblank_frame;
-						const double clock_scale = m_maincpu->clock_scale();
-						const double target_frame_cycles = (m_maincpu->clock() * clock_scale) / m_screen->frame_period().as_hz();
 #if defined(OSD_RETRO)
 						if (log_cb)
-							log_cb(RETRO_LOG_INFO, "sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
-								start_frame, end_frame, avg_frame_cycles, clock_scale, target_frame_cycles);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f steal_cycles_per_frame=%d target_frame_cycles=%.3f\n",
+								start_frame, end_frame, avg_frame_cycles, avg_stolen_cycles, SF2HF_TIMING_STEAL_CYCLES_PER_FRAME, target_frame_cycles);
 						else
 #endif
-							osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
-								start_frame, end_frame, avg_frame_cycles, clock_scale, target_frame_cycles);
+							osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f steal_cycles_per_frame=%d target_frame_cycles=%.3f\n",
+								start_frame, end_frame, avg_frame_cycles, avg_stolen_cycles, SF2HF_TIMING_STEAL_CYCLES_PER_FRAME, target_frame_cycles);
 						m_sf2hf_timing_confirm_logged = true;
 					}
 
-					logerror("sf2hf timing frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.6f target_frame_cycles=%.3f\n",
+					logerror("sf2hf timing frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f steal_cycles_per_frame=%d target_frame_cycles=%.3f\n",
 						m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1,
 						m_sf2hf_vblank_frame,
 						avg_frame_cycles,
-						m_maincpu->clock_scale(),
-						(m_maincpu->clock() * m_maincpu->clock_scale()) / m_screen->frame_period().as_hz());
+						avg_stolen_cycles,
+						SF2HF_TIMING_STEAL_CYCLES_PER_FRAME,
+						target_frame_cycles);
 					m_sf2hf_sample_cycles = 0;
+					m_sf2hf_sample_stolen_cycles = 0;
 					m_sf2hf_sample_frames = 0;
 				}
 			}
 
 			m_sf2hf_last_vblank_cycles = total_cycles;
 			m_sf2hf_vblank_frame++;
+			m_maincpu->spin_until_time(attotime::from_ticks(SF2HF_TIMING_STEAL_CYCLES_PER_FRAME, m_maincpu->clock()));
 		}
 
 		// Get video memory base registers
