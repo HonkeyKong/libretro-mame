@@ -463,6 +463,10 @@ The games seem to use them to mark platforms, kill zones and no-go areas.
 #include "emu.h"
 #include "cps1.h"
 
+#if defined(OSD_RETRO)
+#include "osd/libretro/libretro-internal/libretro_shared.h"
+#endif
+
 #define VERBOSE 0
 
 /***************************************************************************
@@ -3104,12 +3108,18 @@ void cps_state::screen_vblank_cps1(int state)
 
 					if (!m_sf2hf_timing_confirm_logged)
 					{
-						osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
-							m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1,
-							m_sf2hf_vblank_frame,
-							avg_frame_cycles,
-							m_maincpu->clock_scale(),
-							(m_maincpu->clock() * m_maincpu->clock_scale()) / m_screen->frame_period().as_hz());
+						const unsigned start_frame = m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1;
+						const unsigned end_frame = m_sf2hf_vblank_frame;
+						const double clock_scale = m_maincpu->clock_scale();
+						const double target_frame_cycles = (m_maincpu->clock() * clock_scale) / m_screen->frame_period().as_hz();
+#if defined(OSD_RETRO)
+						if (log_cb)
+							log_cb(RETRO_LOG_INFO, "sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
+								start_frame, end_frame, avg_frame_cycles, clock_scale, target_frame_cycles);
+						else
+#endif
+							osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
+								start_frame, end_frame, avg_frame_cycles, clock_scale, target_frame_cycles);
 						m_sf2hf_timing_confirm_logged = true;
 					}
 
