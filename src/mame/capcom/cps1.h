@@ -223,6 +223,14 @@ protected:
 	void cps1_objram_latch(int state);
 
 	void kabuki_setup(void (*decode)(uint8_t *src, uint8_t *dst));
+	void sf2hf_steal_cycles(int cycles)
+	{
+		if (m_sf2hf_timing_calibration && m_maincpu->executing())
+		{
+			m_sf2hf_sample_stolen_cycles += cycles;
+			m_maincpu->eat_cycles(cycles);
+		}
+	}
 
 	/* maps */
 	void main_map(address_map &map) ATTR_COLD;
@@ -239,11 +247,14 @@ protected:
 	void varthb3_map(address_map &map) ATTR_COLD;
 
 	// game-specific
+	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_CYCLES = 4;
+	static constexpr int SF2HF_TIMING_CPS_REG_WAIT_CYCLES = 1;
 	uint16_t m_sf2ceblp_prot = 0;
 	uint16_t m_pang3b4_prot = 0;
 	bool m_sf2hf_timing_calibration = false;
 	uint64_t m_sf2hf_last_vblank_cycles = 0;
 	uint64_t m_sf2hf_sample_cycles = 0;
+	uint64_t m_sf2hf_sample_stolen_cycles = 0;
 	uint32_t m_sf2hf_vblank_frame = 0;
 	uint32_t m_sf2hf_sample_frames = 0;
 	bool m_sf2hf_timing_confirm_logged = false;

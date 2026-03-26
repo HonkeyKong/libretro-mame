@@ -2145,6 +2145,7 @@ inline uint16_t *cps_state::cps1_base(int offset, int boundary)
 
 void cps_state::cps1_cps_a_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 {
+	sf2hf_steal_cycles(SF2HF_TIMING_CPS_REG_WAIT_CYCLES);
 	data = COMBINE_DATA(&m_cps_a_regs[offset]);
 
 	// The main CPU writes the palette to gfxram, and the CPS-B custom copies it
@@ -2166,6 +2167,7 @@ void cps_state::cps1_cps_a_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 
 uint16_t cps_state::cps1_cps_b_r(offs_t offset)
 {
+	sf2hf_steal_cycles(SF2HF_TIMING_CPS_REG_WAIT_CYCLES);
 	// Some games interrogate a couple of registers on bootup.
 	// These are CPS1 board B self test checks. They wander from game to game.
 	if (offset == m_game_config->cpsb_addr / 2)
@@ -2213,6 +2215,7 @@ uint16_t cps_state::cps1_cps_b_r(offs_t offset)
 
 void cps_state::cps1_cps_b_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 {
+	sf2hf_steal_cycles(SF2HF_TIMING_CPS_REG_WAIT_CYCLES);
 	data = COMBINE_DATA(&m_cps_b_regs[offset]);
 
 	// raster counters for cps2 & ganbare
@@ -2398,6 +2401,7 @@ void cps_state::cps1_get_video_base()
 
 void cps_state::cps1_gfxram_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 {
+	sf2hf_steal_cycles(SF2HF_TIMING_GFXRAM_WAIT_CYCLES);
 	int page = (offset >> 7) & 0x3c0;
 	COMBINE_DATA(&m_gfxram[offset]);
 
@@ -3105,31 +3109,34 @@ void cps_state::screen_vblank_cps1(int state)
 				if (m_sf2hf_sample_frames >= 300)
 				{
 					const double avg_frame_cycles = double(m_sf2hf_sample_cycles) / m_sf2hf_sample_frames;
+					const double avg_stolen_cycles = double(m_sf2hf_sample_stolen_cycles) / m_sf2hf_sample_frames;
+					const double avg_effective_cycles = avg_frame_cycles - avg_stolen_cycles;
+					const double target_frame_cycles = double(m_maincpu->clock()) / m_screen->frame_period().as_hz();
 
 					if (!m_sf2hf_timing_confirm_logged)
 					{
 						const unsigned start_frame = m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1;
 						const unsigned end_frame = m_sf2hf_vblank_frame;
-						const double clock_scale = m_maincpu->clock_scale();
-						const double target_frame_cycles = (m_maincpu->clock() * clock_scale) / m_screen->frame_period().as_hz();
 #if defined(OSD_RETRO)
 						if (log_cb)
-							log_cb(RETRO_LOG_INFO, "sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
-								start_frame, end_frame, avg_frame_cycles, clock_scale, target_frame_cycles);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f avg_effective_cycles=%.3f target_frame_cycles=%.3f\n",
+								start_frame, end_frame, avg_frame_cycles, avg_stolen_cycles, avg_effective_cycles, target_frame_cycles);
 						else
 #endif
-							osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
-								start_frame, end_frame, avg_frame_cycles, clock_scale, target_frame_cycles);
+							osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f avg_effective_cycles=%.3f target_frame_cycles=%.3f\n",
+								start_frame, end_frame, avg_frame_cycles, avg_stolen_cycles, avg_effective_cycles, target_frame_cycles);
 						m_sf2hf_timing_confirm_logged = true;
 					}
 
-					logerror("sf2hf timing frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.6f target_frame_cycles=%.3f\n",
+					logerror("sf2hf timing frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f avg_effective_cycles=%.3f target_frame_cycles=%.3f\n",
 						m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1,
 						m_sf2hf_vblank_frame,
 						avg_frame_cycles,
-						m_maincpu->clock_scale(),
-						(m_maincpu->clock() * m_maincpu->clock_scale()) / m_screen->frame_period().as_hz());
+						avg_stolen_cycles,
+						avg_effective_cycles,
+						target_frame_cycles);
 					m_sf2hf_sample_cycles = 0;
+					m_sf2hf_sample_stolen_cycles = 0;
 					m_sf2hf_sample_frames = 0;
 				}
 			}
