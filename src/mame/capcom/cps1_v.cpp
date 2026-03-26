@@ -3100,10 +3100,23 @@ void cps_state::screen_vblank_cps1(int state)
 
 				if (m_sf2hf_sample_frames >= 300)
 				{
+					const double avg_frame_cycles = double(m_sf2hf_sample_cycles) / m_sf2hf_sample_frames;
+
+					if (!m_sf2hf_timing_confirm_logged)
+					{
+						machine().logerror("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
+							m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1,
+							m_sf2hf_vblank_frame,
+							avg_frame_cycles,
+							m_maincpu->clock_scale(),
+							(m_maincpu->clock() * m_maincpu->clock_scale()) / m_screen->frame_period().as_hz());
+						m_sf2hf_timing_confirm_logged = true;
+					}
+
 					logerror("sf2hf timing frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.6f target_frame_cycles=%.3f\n",
 						m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1,
 						m_sf2hf_vblank_frame,
-						double(m_sf2hf_sample_cycles) / m_sf2hf_sample_frames,
+						avg_frame_cycles,
 						m_maincpu->clock_scale(),
 						(m_maincpu->clock() * m_maincpu->clock_scale()) / m_screen->frame_period().as_hz());
 					m_sf2hf_sample_cycles = 0;

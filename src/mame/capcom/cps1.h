@@ -246,6 +246,7 @@ protected:
 	uint64_t m_sf2hf_sample_cycles = 0;
 	uint32_t m_sf2hf_vblank_frame = 0;
 	uint32_t m_sf2hf_sample_frames = 0;
+	bool m_sf2hf_timing_confirm_logged = false;
 
 	/* video-related */
 	tilemap_t *m_bg_tilemap[3]{};
