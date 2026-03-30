@@ -162,6 +162,7 @@ public:
 	void init_sf2ceblp();
 	void init_sf2m8();
 	void init_dinohunt();
+	bool trigger_timing_capture();
 
 protected:
 	DECLARE_MACHINE_START(common);
@@ -203,6 +204,16 @@ protected:
 	void varthb2_cps_a_w(offs_t offset, uint16_t data);
 	uint16_t pang3b4_prot_r();
 	void pang3b4_prot_w(uint16_t data);
+	void reset_sf2hf_timing_sample();
+	int sf2hf_gfxram_bucket_for_offset(offs_t offset);
+	uint32_t sf2hf_gfxram_page_for_offset(offs_t offset) const;
+	uint32_t sf2hf_gfxram_page_for_reg(int reg_offset) const;
+	uint32_t sf2hf_gfxram_reg_word_base(int reg_offset, int boundary) const;
+	uint32_t sf2hf_gfxram_obj_alt_reg_word_base() const;
+	uint32_t sf2hf_gfxram_other_bus_word_base() const;
+	bool sf2hf_gfxram_range_contains_offset(offs_t offset, int reg_offset, int boundary, uint32_t size_bytes) const;
+	bool sf2hf_gfxram_range_contains_word(offs_t offset, uint32_t start, uint32_t size_words) const;
+	bool sf2hf_gfxram_page_matches_reg(offs_t offset, int reg_offset) const;
 
 	TILEMAP_MAPPER_MEMBER(tilemap0_scan);
 	TILEMAP_MAPPER_MEMBER(tilemap1_scan);
@@ -223,11 +234,13 @@ protected:
 	void cps1_objram_latch(int state);
 
 	void kabuki_setup(void (*decode)(uint8_t *src, uint8_t *dst));
-	void sf2hf_steal_cycles(int cycles)
+	void sf2hf_steal_cycles(int cycles, uint64_t *sample_counter = nullptr)
 	{
 		if (m_sf2hf_timing_calibration && m_maincpu->executing())
 		{
 			m_sf2hf_sample_stolen_cycles += cycles;
+			if (sample_counter)
+				*sample_counter += cycles;
 			m_maincpu->eat_cycles(cycles);
 		}
 	}
@@ -247,17 +260,53 @@ protected:
 	void varthb3_map(address_map &map) ATTR_COLD;
 
 	// game-specific
-	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_CYCLES = 33;
-	static constexpr int SF2HF_TIMING_CPS_REG_WAIT_CYCLES = 8;
+	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_CYCLES = 29;
+	static constexpr int SF2HF_TIMING_CPS_REG_WAIT_CYCLES = 7;
+	static constexpr int SF2HF_GFXRAM_BUCKET_SCROLL1 = 0;
+	static constexpr int SF2HF_GFXRAM_BUCKET_SCROLL2 = 1;
+	static constexpr int SF2HF_GFXRAM_BUCKET_SCROLL3 = 2;
+	static constexpr int SF2HF_GFXRAM_BUCKET_OBJ = 3;
+	static constexpr int SF2HF_GFXRAM_BUCKET_OTHER = 4;
+	static constexpr int SF2HF_GFXRAM_BUCKET_PALETTE = 5;
+	static constexpr int SF2HF_GFXRAM_BUCKET_UNKNOWN = 6;
+	static constexpr int SF2HF_GFXRAM_BUCKET_COUNT = 7;
+	static constexpr int SF2HF_GFXRAM_PAGE_COUNT = 16;
+	static constexpr int SF2HF_PROBE_PAGE_COUNT = 3;
+	static constexpr int SF2HF_PROBE_BIN_COUNT = 8;
+	static constexpr int SF2HF_GFXRAM_PAGE_SHIFT = 13;
+	static constexpr int SF2HF_GFXRAM_BLOCK_SIZE = 0x100;
+	static constexpr int SF2HF_GFXRAM_BLOCK_COUNT = 0x300;
+	static constexpr int SF2HF_GFXRAM_PAGE_WORDS = 0x1000 / 2;
+
 	uint16_t m_sf2ceblp_prot = 0;
 	uint16_t m_pang3b4_prot = 0;
 	bool m_sf2hf_timing_calibration = false;
 	uint64_t m_sf2hf_last_vblank_cycles = 0;
 	uint64_t m_sf2hf_sample_cycles = 0;
 	uint64_t m_sf2hf_sample_stolen_cycles = 0;
+	uint64_t m_sf2hf_sample_cps_a_cycles = 0;
+	uint64_t m_sf2hf_sample_cps_b_cycles = 0;
+	uint64_t m_sf2hf_sample_gfxram_cycles = 0;
+	uint64_t m_sf2hf_sample_gfxram_bucket_cycles[SF2HF_GFXRAM_BUCKET_COUNT]{};
+	uint32_t m_sf2hf_sample_cps_a_writes = 0;
+	uint32_t m_sf2hf_sample_cps_b_reads = 0;
+	uint32_t m_sf2hf_sample_cps_b_writes = 0;
+	uint32_t m_sf2hf_sample_gfxram_writes = 0;
+	uint32_t m_sf2hf_sample_gfxram_bucket_writes[SF2HF_GFXRAM_BUCKET_COUNT]{};
+	uint32_t m_sf2hf_sample_gfxram_block_writes[SF2HF_GFXRAM_BLOCK_COUNT]{};
+	uint32_t m_sf2hf_sample_unknown_page_writes[SF2HF_GFXRAM_PAGE_COUNT]{};
+	uint32_t m_sf2hf_sample_obj_base_page_writes = 0;
+	uint32_t m_sf2hf_sample_obj_alt_page_writes = 0;
+	uint32_t m_sf2hf_sample_other_base_page_writes = 0;
+	uint32_t m_sf2hf_sample_palette_base_page_writes = 0;
+	uint32_t m_sf2hf_probe_pages[SF2HF_PROBE_PAGE_COUNT]{4, 6, 8};
+	uint32_t m_sf2hf_probe_page_min_offset[SF2HF_PROBE_PAGE_COUNT]{0x3ff, 0x3ff, 0x3ff};
+	uint32_t m_sf2hf_probe_page_max_offset[SF2HF_PROBE_PAGE_COUNT]{0, 0, 0};
+	uint32_t m_sf2hf_probe_page_bin_writes[SF2HF_PROBE_PAGE_COUNT][SF2HF_PROBE_BIN_COUNT]{};
 	uint32_t m_sf2hf_vblank_frame = 0;
 	uint32_t m_sf2hf_sample_frames = 0;
 	bool m_sf2hf_timing_confirm_logged = false;
+	bool m_sf2hf_timing_sample_pending = false;
 
 	/* video-related */
 	tilemap_t *m_bg_tilemap[3]{};

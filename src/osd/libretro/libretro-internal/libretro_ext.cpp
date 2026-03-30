@@ -25,6 +25,7 @@ ABI rules:
 #include "emu.h"
 #include "libretro_ext.h"
 #include "../frontend/mame/mame.h"
+#include "../../../mame/capcom/cps1.h"
 
 #include <string>
 #include <vector>
@@ -115,6 +116,19 @@ static void libretro_ext_set_debug_extensions_enabled_impl(bool enabled)
 static bool libretro_ext_get_debug_extensions_enabled_impl()
 {
     return g_extDebugExtensionsEnabled;
+}
+
+static bool libretro_ext_trigger_timing_capture_impl()
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    cps_state* cps = dynamic_cast<cps_state*>(&mach->root_device());
+    if (!cps)
+        return false;
+
+    return cps->trigger_timing_capture();
 }
 
 // Lazy way of seeing all devices attached to the running machine
@@ -1007,94 +1021,9 @@ static bool libretro_ext_set_dip_value_impl(int index, uint32_t value)
     return true;
 }
 
-static const libretro_ext_api_v1 g_ext_api_v1 = {
-    1,
-    &libretro_ext_get_driver_name_impl,
-    &libretro_ext_cpu_count_impl,
-    &libretro_ext_get_cpu_tag_impl,
-    &libretro_ext_get_cpu_pc_impl,
-};
-
-static const libretro_ext_api_v2 g_ext_api_v2 = {
-    2,
-    sizeof(libretro_ext_api_v2),
-
-    libretro_ext_get_driver_name_impl,
-    libretro_ext_cpu_count_impl,
-    libretro_ext_get_cpu_tag_impl,
-    libretro_ext_get_cpu_pc_impl,
-
-    libretro_ext_read_u8_impl,
-    libretro_ext_read_u16_impl,
-    libretro_ext_read_u32_impl,
-
-    libretro_ext_write_u8_impl,
-    libretro_ext_write_u16_impl,
-    libretro_ext_write_u32_impl,
-
-    libretro_ext_get_region_count_impl,
-    libretro_ext_get_region_tag_impl,
-    libretro_ext_get_region_size_impl,
-
-    libretro_ext_read_region_impl,
-    libretro_ext_write_region_impl,
-
-    libretro_ext_get_frame_number_impl,
-    libretro_ext_get_time_attoseconds_impl,
-
-    // libretro_ext_get_cpu_total_cycles_impl,
-    libretro_ext_get_cpu_total_cycles_by_tag_impl,
-
-    libretro_ext_clear_watch_rules_impl,
-    libretro_ext_add_watch_rule_impl,
-    libretro_ext_get_last_watch_hit_impl,
-    libretro_ext_clear_last_watch_hit_impl,
-    libretro_ext_check_watch_hit_impl
-};
-
-static const libretro_ext_api_v3 g_ext_api_v3 = {
-    3,
-    sizeof(libretro_ext_api_v3),
-
-    libretro_ext_get_driver_name_impl,
-    libretro_ext_cpu_count_impl,
-    libretro_ext_get_cpu_tag_impl,
-    libretro_ext_get_cpu_pc_impl,
-
-    libretro_ext_read_u8_impl,
-    libretro_ext_read_u16_impl,
-    libretro_ext_read_u32_impl,
-
-    libretro_ext_write_u8_impl,
-    libretro_ext_write_u16_impl,
-    libretro_ext_write_u32_impl,
-
-    libretro_ext_get_region_count_impl,
-    libretro_ext_get_region_tag_impl,
-    libretro_ext_get_region_size_impl,
-
-    libretro_ext_read_region_impl,
-    libretro_ext_write_region_impl,
-
-    libretro_ext_get_frame_number_impl,
-    libretro_ext_get_time_attoseconds_impl,
-
-    libretro_ext_get_cpu_total_cycles_by_tag_impl,
-
-    libretro_ext_clear_watch_rules_impl,
-    libretro_ext_add_watch_rule_impl,
-    libretro_ext_get_last_watch_hit_impl,
-    libretro_ext_clear_last_watch_hit_impl,
-    libretro_ext_check_watch_hit_impl,
-
-    libretro_ext_get_dip_count_impl,
-    libretro_ext_get_dip_info_impl,
-    libretro_ext_set_dip_value_impl
-};
-
-static const libretro_ext_api_v4 g_ext_api_v4 = {
-    4,
-    sizeof(libretro_ext_api_v4),
+static const libretro_ext_api g_ext_api = {
+    5,
+    sizeof(libretro_ext_api),
 
     libretro_ext_get_driver_name_impl,
     libretro_ext_cpu_count_impl,
@@ -1132,28 +1061,15 @@ static const libretro_ext_api_v4 g_ext_api_v4 = {
     libretro_ext_set_dip_value_impl,
 
     libretro_ext_set_debug_extensions_enabled_impl,
-    libretro_ext_get_debug_extensions_enabled_impl
+    libretro_ext_get_debug_extensions_enabled_impl,
+
+    libretro_ext_trigger_timing_capture_impl
 };
 
 extern "C" {
-    LIBRETRO_EXT_EXPORT const libretro_ext_api_v1* libretro_ext_get_api_v1()
+    LIBRETRO_EXT_EXPORT const libretro_ext_api* libretro_ext_get_api()
     {
-        return &g_ext_api_v1;
-    }
-
-    LIBRETRO_EXT_EXPORT const libretro_ext_api_v2* libretro_ext_get_api_v2()
-    {
-        return &g_ext_api_v2;
-    }
-
-    LIBRETRO_EXT_EXPORT const libretro_ext_api_v3* libretro_ext_get_api_v3()
-    {
-        return &g_ext_api_v3;
-    }
-
-    LIBRETRO_EXT_EXPORT const libretro_ext_api_v4* libretro_ext_get_api_v4()
-    {
-        return &g_ext_api_v4;
+        return &g_ext_api;
     }
 }
 #endif // LIBRETRO_EXT_HPP
