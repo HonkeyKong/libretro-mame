@@ -2145,6 +2145,9 @@ inline uint16_t *cps_state::cps1_base(int offset, int boundary)
 
 void cps_state::cps1_cps_a_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 {
+	sf2hf_steal_cycles(SF2HF_TIMING_CPS_REG_WAIT_CYCLES, &m_sf2hf_sample_cps_a_cycles);
+	if (m_sf2hf_timing_calibration && m_maincpu->executing())
+		m_sf2hf_sample_cps_a_writes++;
 	data = COMBINE_DATA(&m_cps_a_regs[offset]);
 
 	// The main CPU writes the palette to gfxram, and the CPS-B custom copies it
@@ -2166,6 +2169,9 @@ void cps_state::cps1_cps_a_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 
 uint16_t cps_state::cps1_cps_b_r(offs_t offset)
 {
+	sf2hf_steal_cycles(SF2HF_TIMING_CPS_REG_WAIT_CYCLES, &m_sf2hf_sample_cps_b_cycles);
+	if (m_sf2hf_timing_calibration && m_maincpu->executing())
+		m_sf2hf_sample_cps_b_reads++;
 	// Some games interrogate a couple of registers on bootup.
 	// These are CPS1 board B self test checks. They wander from game to game.
 	if (offset == m_game_config->cpsb_addr / 2)
@@ -2213,6 +2219,9 @@ uint16_t cps_state::cps1_cps_b_r(offs_t offset)
 
 void cps_state::cps1_cps_b_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 {
+	sf2hf_steal_cycles(SF2HF_TIMING_CPS_REG_WAIT_CYCLES, &m_sf2hf_sample_cps_b_cycles);
+	if (m_sf2hf_timing_calibration && m_maincpu->executing())
+		m_sf2hf_sample_cps_b_writes++;
 	data = COMBINE_DATA(&m_cps_b_regs[offset]);
 
 	// raster counters for cps2 & ganbare
@@ -2396,9 +2405,132 @@ void cps_state::cps1_get_video_base()
 }
 
 
+int cps_state::sf2hf_gfxram_bucket_for_offset(offs_t offset)
+{
+	if (sf2hf_gfxram_range_contains_offset(offset, CPS1_SCROLL1_BASE, m_scroll_size, m_scroll_size))
+		return SF2HF_GFXRAM_BUCKET_SCROLL1;
+	if (sf2hf_gfxram_range_contains_offset(offset, CPS1_SCROLL2_BASE, m_scroll_size, m_scroll_size))
+		return SF2HF_GFXRAM_BUCKET_SCROLL2;
+	if (sf2hf_gfxram_range_contains_offset(offset, CPS1_SCROLL3_BASE, m_scroll_size, m_scroll_size))
+		return SF2HF_GFXRAM_BUCKET_SCROLL3;
+	if (sf2hf_gfxram_range_contains_offset(offset, CPS1_OBJ_BASE, m_obj_size, m_obj_size))
+		return SF2HF_GFXRAM_BUCKET_OBJ;
+	if (sf2hf_gfxram_range_contains_word(offset, sf2hf_gfxram_obj_alt_reg_word_base(), m_obj_size / 2))
+		return SF2HF_GFXRAM_BUCKET_OBJ;
+	if (sf2hf_gfxram_range_contains_word(offset, sf2hf_gfxram_other_bus_word_base(), SF2HF_GFXRAM_PAGE_WORDS))
+		return SF2HF_GFXRAM_BUCKET_OTHER;
+	if (sf2hf_gfxram_range_contains_offset(offset, CPS1_PALETTE_BASE, m_palette_align, m_palette_size))
+		return SF2HF_GFXRAM_BUCKET_PALETTE;
+	return SF2HF_GFXRAM_BUCKET_UNKNOWN;
+}
+
+
+uint32_t cps_state::sf2hf_gfxram_page_for_offset(offs_t offset) const
+{
+	return (uint32_t(offset) >> SF2HF_GFXRAM_PAGE_SHIFT) & (SF2HF_GFXRAM_PAGE_COUNT - 1);
+}
+
+
+uint32_t cps_state::sf2hf_gfxram_page_for_reg(int reg_offset) const
+{
+	return (m_cps_a_regs[reg_offset] >> 6) & (SF2HF_GFXRAM_PAGE_COUNT - 1);
+}
+
+
+uint32_t cps_state::sf2hf_gfxram_reg_word_base(int reg_offset, int boundary) const
+{
+	uint32_t base = uint32_t(m_cps_a_regs[reg_offset]) * 256;
+	base &= ~(uint32_t(boundary) - 1);
+	return (base & 0x3ffff) / 2;
+}
+
+
+uint32_t cps_state::sf2hf_gfxram_obj_alt_reg_word_base() const
+{
+	// SF2-family code alternates sprite writes between 0x9100 and 0x9180 pages.
+	uint32_t base = uint32_t(m_cps_a_regs[CPS1_OBJ_BASE] ^ 0x0080) * 256;
+	base &= ~(uint32_t(m_obj_size) - 1);
+	return (base & 0x3ffff) / 2;
+}
+
+
+uint32_t cps_state::sf2hf_gfxram_other_bus_word_base() const
+{
+	// SF2HF appears to hit the whole OTHER_BASE page on the bus, not just the
+	// smaller rowscroll window the renderer consumes directly.
+	return sf2hf_gfxram_reg_word_base(CPS1_OTHER_BASE, 0x1000);
+}
+
+
+bool cps_state::sf2hf_gfxram_range_contains_offset(offs_t offset, int reg_offset, int boundary, uint32_t size_bytes) const
+{
+	if (!size_bytes)
+		return false;
+
+	const uint32_t size_words = size_bytes / 2;
+	return sf2hf_gfxram_range_contains_word(offset, sf2hf_gfxram_reg_word_base(reg_offset, boundary), size_words);
+}
+
+
+bool cps_state::sf2hf_gfxram_range_contains_word(offs_t offset, uint32_t start, uint32_t size_words) const
+{
+	if (!size_words)
+		return false;
+
+	const uint32_t total_words = m_gfxram.bytes() / 2;
+	const uint32_t word = uint32_t(offset) % total_words;
+	start %= total_words;
+
+	if (start + size_words <= total_words)
+		return word >= start && word < (start + size_words);
+
+	return word >= start || word < ((start + size_words) % total_words);
+}
+
+
+bool cps_state::sf2hf_gfxram_page_matches_reg(offs_t offset, int reg_offset) const
+{
+	return sf2hf_gfxram_page_for_offset(offset) == sf2hf_gfxram_page_for_reg(reg_offset);
+}
+
+
 void cps_state::cps1_gfxram_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 {
-	int page = (offset >> 7) & 0x3c0;
+	sf2hf_steal_cycles(SF2HF_TIMING_GFXRAM_WAIT_CYCLES, &m_sf2hf_sample_gfxram_cycles);
+	const int page = (offset >> 7) & 0x3c0;
+	if (m_sf2hf_timing_calibration && m_maincpu->executing())
+	{
+		const int bucket = sf2hf_gfxram_bucket_for_offset(offset);
+		const uint32_t block_index = ((uint32_t(offset) * sizeof(uint16_t)) / SF2HF_GFXRAM_BLOCK_SIZE) % SF2HF_GFXRAM_BLOCK_COUNT;
+		m_sf2hf_sample_gfxram_writes++;
+		m_sf2hf_sample_gfxram_bucket_cycles[bucket] += SF2HF_TIMING_GFXRAM_WAIT_CYCLES;
+		m_sf2hf_sample_gfxram_bucket_writes[bucket]++;
+		m_sf2hf_sample_gfxram_block_writes[block_index]++;
+		if (sf2hf_gfxram_page_matches_reg(offset, CPS1_OBJ_BASE))
+			m_sf2hf_sample_obj_base_page_writes++;
+		if (sf2hf_gfxram_page_for_offset(offset) == (sf2hf_gfxram_obj_alt_reg_word_base() >> SF2HF_GFXRAM_PAGE_SHIFT))
+			m_sf2hf_sample_obj_alt_page_writes++;
+		if (sf2hf_gfxram_page_matches_reg(offset, CPS1_OTHER_BASE))
+			m_sf2hf_sample_other_base_page_writes++;
+		if (sf2hf_gfxram_page_matches_reg(offset, CPS1_PALETTE_BASE))
+			m_sf2hf_sample_palette_base_page_writes++;
+		if (bucket == SF2HF_GFXRAM_BUCKET_UNKNOWN)
+		{
+			const uint32_t page_index = sf2hf_gfxram_page_for_offset(offset);
+			const uint32_t page_offset = uint32_t(offset) & 0x3ff;
+			m_sf2hf_sample_unknown_page_writes[page_index]++;
+			for (int i = 0; i < SF2HF_PROBE_PAGE_COUNT; i++)
+			{
+				if (page_index != m_sf2hf_probe_pages[i])
+					continue;
+				if (page_offset < m_sf2hf_probe_page_min_offset[i])
+					m_sf2hf_probe_page_min_offset[i] = page_offset;
+				if (page_offset > m_sf2hf_probe_page_max_offset[i])
+					m_sf2hf_probe_page_max_offset[i] = page_offset;
+				m_sf2hf_probe_page_bin_writes[i][page_offset >> 7]++;
+			}
+		}
+	}
 	COMBINE_DATA(&m_gfxram[offset]);
 
 	if (page == (m_cps_a_regs[CPS1_SCROLL1_BASE] & 0x3c0))
@@ -2572,7 +2704,7 @@ void cps_state::video_start()
 	m_obj_size       = 0x0800;
 	m_other_size     = 0x0800;
 	m_palette_align  = 0x0400; // minimum alignment is a single palette page (512 colors). Verified on pcb.
-	m_palette_size   = cps1_palette_entries * 32; // Size of palette RAM
+	m_palette_size   = cps1_palette_entries * sizeof(uint16_t); // Size of palette staging data in gfxram
 	m_stars_rom_size = 0x2000; // first 0x4000 of gfx ROM are used, but 0x0000-0x1fff is == 0x2000-0x3fff
 
 	// create tilemaps
@@ -3105,31 +3237,214 @@ void cps_state::screen_vblank_cps1(int state)
 				if (m_sf2hf_sample_frames >= 300)
 				{
 					const double avg_frame_cycles = double(m_sf2hf_sample_cycles) / m_sf2hf_sample_frames;
+					const double avg_stolen_cycles = double(m_sf2hf_sample_stolen_cycles) / m_sf2hf_sample_frames;
+					const double avg_effective_cycles = avg_frame_cycles - avg_stolen_cycles;
+					const double avg_cps_a_cycles = double(m_sf2hf_sample_cps_a_cycles) / m_sf2hf_sample_frames;
+					const double avg_cps_b_cycles = double(m_sf2hf_sample_cps_b_cycles) / m_sf2hf_sample_frames;
+					const double avg_gfxram_cycles = double(m_sf2hf_sample_gfxram_cycles) / m_sf2hf_sample_frames;
+					const double avg_cps_a_writes = double(m_sf2hf_sample_cps_a_writes) / m_sf2hf_sample_frames;
+					const double avg_cps_b_reads = double(m_sf2hf_sample_cps_b_reads) / m_sf2hf_sample_frames;
+					const double avg_cps_b_writes = double(m_sf2hf_sample_cps_b_writes) / m_sf2hf_sample_frames;
+					const double avg_gfxram_writes = double(m_sf2hf_sample_gfxram_writes) / m_sf2hf_sample_frames;
+					const double avg_gfxram_scroll1_cycles = double(m_sf2hf_sample_gfxram_bucket_cycles[SF2HF_GFXRAM_BUCKET_SCROLL1]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_scroll2_cycles = double(m_sf2hf_sample_gfxram_bucket_cycles[SF2HF_GFXRAM_BUCKET_SCROLL2]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_scroll3_cycles = double(m_sf2hf_sample_gfxram_bucket_cycles[SF2HF_GFXRAM_BUCKET_SCROLL3]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_obj_cycles = double(m_sf2hf_sample_gfxram_bucket_cycles[SF2HF_GFXRAM_BUCKET_OBJ]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_other_cycles = double(m_sf2hf_sample_gfxram_bucket_cycles[SF2HF_GFXRAM_BUCKET_OTHER]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_palette_cycles = double(m_sf2hf_sample_gfxram_bucket_cycles[SF2HF_GFXRAM_BUCKET_PALETTE]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_unknown_cycles = double(m_sf2hf_sample_gfxram_bucket_cycles[SF2HF_GFXRAM_BUCKET_UNKNOWN]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_scroll1_writes = double(m_sf2hf_sample_gfxram_bucket_writes[SF2HF_GFXRAM_BUCKET_SCROLL1]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_scroll2_writes = double(m_sf2hf_sample_gfxram_bucket_writes[SF2HF_GFXRAM_BUCKET_SCROLL2]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_scroll3_writes = double(m_sf2hf_sample_gfxram_bucket_writes[SF2HF_GFXRAM_BUCKET_SCROLL3]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_obj_writes = double(m_sf2hf_sample_gfxram_bucket_writes[SF2HF_GFXRAM_BUCKET_OBJ]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_other_writes = double(m_sf2hf_sample_gfxram_bucket_writes[SF2HF_GFXRAM_BUCKET_OTHER]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_palette_writes = double(m_sf2hf_sample_gfxram_bucket_writes[SF2HF_GFXRAM_BUCKET_PALETTE]) / m_sf2hf_sample_frames;
+					const double avg_gfxram_unknown_writes = double(m_sf2hf_sample_gfxram_bucket_writes[SF2HF_GFXRAM_BUCKET_UNKNOWN]) / m_sf2hf_sample_frames;
+					int unknown_page_ids[3]{-1, -1, -1};
+					uint32_t unknown_page_counts[3]{0, 0, 0};
+					for (int i = 0; i < SF2HF_GFXRAM_PAGE_COUNT; i++)
+					{
+						const uint32_t count = m_sf2hf_sample_unknown_page_writes[i];
+						for (int slot = 0; slot < 3; slot++)
+						{
+							if (count > unknown_page_counts[slot])
+							{
+								for (int shift = 2; shift > slot; shift--)
+								{
+									unknown_page_counts[shift] = unknown_page_counts[shift - 1];
+									unknown_page_ids[shift] = unknown_page_ids[shift - 1];
+								}
+								unknown_page_counts[slot] = count;
+								unknown_page_ids[slot] = i;
+								break;
+							}
+						}
+					}
+					const double avg_unknown_page0_writes = double(unknown_page_counts[0]) / m_sf2hf_sample_frames;
+					const double avg_unknown_page1_writes = double(unknown_page_counts[1]) / m_sf2hf_sample_frames;
+					const double avg_unknown_page2_writes = double(unknown_page_counts[2]) / m_sf2hf_sample_frames;
+					const uint32_t obj_base_page = sf2hf_gfxram_page_for_reg(CPS1_OBJ_BASE);
+					const uint32_t scroll1_base_page = sf2hf_gfxram_page_for_reg(CPS1_SCROLL1_BASE);
+					const uint32_t scroll2_base_page = sf2hf_gfxram_page_for_reg(CPS1_SCROLL2_BASE);
+					const uint32_t scroll3_base_page = sf2hf_gfxram_page_for_reg(CPS1_SCROLL3_BASE);
+					const uint32_t other_base_page = sf2hf_gfxram_page_for_reg(CPS1_OTHER_BASE);
+					const uint32_t palette_base_page = sf2hf_gfxram_page_for_reg(CPS1_PALETTE_BASE);
+					const uint32_t obj_base_raw = m_cps_a_regs[CPS1_OBJ_BASE];
+					const uint32_t scroll1_base_raw = m_cps_a_regs[CPS1_SCROLL1_BASE];
+					const uint32_t scroll2_base_raw = m_cps_a_regs[CPS1_SCROLL2_BASE];
+					const uint32_t scroll3_base_raw = m_cps_a_regs[CPS1_SCROLL3_BASE];
+					const uint32_t other_base_raw = m_cps_a_regs[CPS1_OTHER_BASE];
+					const uint32_t palette_base_raw = m_cps_a_regs[CPS1_PALETTE_BASE];
+					const double avg_obj_base_page_writes = double(m_sf2hf_sample_obj_base_page_writes) / m_sf2hf_sample_frames;
+					const double avg_obj_alt_page_writes = double(m_sf2hf_sample_obj_alt_page_writes) / m_sf2hf_sample_frames;
+					const double avg_other_base_page_writes = double(m_sf2hf_sample_other_base_page_writes) / m_sf2hf_sample_frames;
+					const double avg_palette_base_page_writes = double(m_sf2hf_sample_palette_base_page_writes) / m_sf2hf_sample_frames;
+					int hot_block_ids[6]{-1, -1, -1, -1, -1, -1};
+					uint32_t hot_block_counts[6]{0, 0, 0, 0, 0, 0};
+					for (int i = 0; i < SF2HF_GFXRAM_BLOCK_COUNT; i++)
+					{
+						const uint32_t count = m_sf2hf_sample_gfxram_block_writes[i];
+						for (int slot = 0; slot < 6; slot++)
+						{
+							if (count > hot_block_counts[slot])
+							{
+								for (int shift = 5; shift > slot; shift--)
+								{
+									hot_block_counts[shift] = hot_block_counts[shift - 1];
+									hot_block_ids[shift] = hot_block_ids[shift - 1];
+								}
+								hot_block_counts[slot] = count;
+								hot_block_ids[slot] = i;
+								break;
+							}
+						}
+					}
+					double avg_probe_page_bin_writes[SF2HF_PROBE_PAGE_COUNT][SF2HF_PROBE_BIN_COUNT]{};
+					for (int i = 0; i < SF2HF_PROBE_PAGE_COUNT; i++)
+					{
+						for (int j = 0; j < SF2HF_PROBE_BIN_COUNT; j++)
+							avg_probe_page_bin_writes[i][j] = double(m_sf2hf_probe_page_bin_writes[i][j]) / m_sf2hf_sample_frames;
+					}
+					const double target_frame_cycles = double(m_maincpu->clock()) / m_screen->frame_period().as_hz();
 
 					if (!m_sf2hf_timing_confirm_logged)
 					{
 						const unsigned start_frame = m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1;
 						const unsigned end_frame = m_sf2hf_vblank_frame;
-						const double clock_scale = m_maincpu->clock_scale();
-						const double target_frame_cycles = (m_maincpu->clock() * clock_scale) / m_screen->frame_period().as_hz();
 #if defined(OSD_RETRO)
 						if (log_cb)
-							log_cb(RETRO_LOG_INFO, "sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
-								start_frame, end_frame, avg_frame_cycles, clock_scale, target_frame_cycles);
+						{
+							log_cb(RETRO_LOG_INFO, "sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f avg_effective_cycles=%.3f target_frame_cycles=%.3f\n",
+								start_frame, end_frame, avg_frame_cycles, avg_stolen_cycles, avg_effective_cycles, target_frame_cycles);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing bus avg_cps_a_cycles=%.3f avg_cps_b_cycles=%.3f avg_gfxram_cycles=%.3f avg_cps_a_writes=%.3f avg_cps_b_reads=%.3f avg_cps_b_writes=%.3f avg_gfxram_writes=%.3f\n",
+								avg_cps_a_cycles, avg_cps_b_cycles, avg_gfxram_cycles,
+								avg_cps_a_writes, avg_cps_b_reads, avg_cps_b_writes, avg_gfxram_writes);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing gfxram avg_scroll1_cycles=%.3f avg_scroll2_cycles=%.3f avg_scroll3_cycles=%.3f avg_obj_cycles=%.3f avg_other_cycles=%.3f avg_palette_cycles=%.3f avg_unknown_cycles=%.3f\n",
+								avg_gfxram_scroll1_cycles, avg_gfxram_scroll2_cycles, avg_gfxram_scroll3_cycles,
+								avg_gfxram_obj_cycles, avg_gfxram_other_cycles, avg_gfxram_palette_cycles, avg_gfxram_unknown_cycles);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing writes avg_scroll1=%.3f avg_scroll2=%.3f avg_scroll3=%.3f avg_obj=%.3f avg_other=%.3f avg_palette=%.3f avg_unknown=%.3f\n",
+								avg_gfxram_scroll1_writes, avg_gfxram_scroll2_writes, avg_gfxram_scroll3_writes,
+								avg_gfxram_obj_writes, avg_gfxram_other_writes, avg_gfxram_palette_writes, avg_gfxram_unknown_writes);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing unknown-pages page0=%d avg_writes=%.3f page1=%d avg_writes=%.3f page2=%d avg_writes=%.3f\n",
+								unknown_page_ids[0], avg_unknown_page0_writes, unknown_page_ids[1], avg_unknown_page1_writes, unknown_page_ids[2], avg_unknown_page2_writes);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing bases obj=%d scroll1=%d scroll2=%d scroll3=%d other=%d palette=%d\n",
+								obj_base_page, scroll1_base_page, scroll2_base_page, scroll3_base_page, other_base_page, palette_base_page);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing base-raw obj=%04x scroll1=%04x scroll2=%04x scroll3=%04x other=%04x palette=%04x page_hits obj=%.3f obj_alt=%.3f other=%.3f palette=%.3f\n",
+								obj_base_raw, scroll1_base_raw, scroll2_base_raw, scroll3_base_raw, other_base_raw, palette_base_raw,
+								avg_obj_base_page_writes, avg_obj_alt_page_writes, avg_other_base_page_writes, avg_palette_base_page_writes);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing hot-blocks b0=%03x avg=%.3f b1=%03x avg=%.3f b2=%03x avg=%.3f b3=%03x avg=%.3f b4=%03x avg=%.3f b5=%03x avg=%.3f\n",
+								hot_block_ids[0], double(hot_block_counts[0]) / m_sf2hf_sample_frames,
+								hot_block_ids[1], double(hot_block_counts[1]) / m_sf2hf_sample_frames,
+								hot_block_ids[2], double(hot_block_counts[2]) / m_sf2hf_sample_frames,
+								hot_block_ids[3], double(hot_block_counts[3]) / m_sf2hf_sample_frames,
+								hot_block_ids[4], double(hot_block_counts[4]) / m_sf2hf_sample_frames,
+								hot_block_ids[5], double(hot_block_counts[5]) / m_sf2hf_sample_frames);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing probe page4 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+								m_sf2hf_probe_page_min_offset[0], m_sf2hf_probe_page_max_offset[0],
+								avg_probe_page_bin_writes[0][0], avg_probe_page_bin_writes[0][1], avg_probe_page_bin_writes[0][2], avg_probe_page_bin_writes[0][3],
+								avg_probe_page_bin_writes[0][4], avg_probe_page_bin_writes[0][5], avg_probe_page_bin_writes[0][6], avg_probe_page_bin_writes[0][7]);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing probe page6 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+								m_sf2hf_probe_page_min_offset[1], m_sf2hf_probe_page_max_offset[1],
+								avg_probe_page_bin_writes[1][0], avg_probe_page_bin_writes[1][1], avg_probe_page_bin_writes[1][2], avg_probe_page_bin_writes[1][3],
+								avg_probe_page_bin_writes[1][4], avg_probe_page_bin_writes[1][5], avg_probe_page_bin_writes[1][6], avg_probe_page_bin_writes[1][7]);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing probe page8 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+								m_sf2hf_probe_page_min_offset[2], m_sf2hf_probe_page_max_offset[2],
+								avg_probe_page_bin_writes[2][0], avg_probe_page_bin_writes[2][1], avg_probe_page_bin_writes[2][2], avg_probe_page_bin_writes[2][3],
+								avg_probe_page_bin_writes[2][4], avg_probe_page_bin_writes[2][5], avg_probe_page_bin_writes[2][6], avg_probe_page_bin_writes[2][7]);
+						}
 						else
 #endif
-							osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.9f target_frame_cycles=%.3f\n",
-								start_frame, end_frame, avg_frame_cycles, clock_scale, target_frame_cycles);
+						{
+							osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f avg_effective_cycles=%.3f target_frame_cycles=%.3f\n",
+								start_frame, end_frame, avg_frame_cycles, avg_stolen_cycles, avg_effective_cycles, target_frame_cycles);
+							osd_printf_info("sf2hf timing bus avg_cps_a_cycles=%.3f avg_cps_b_cycles=%.3f avg_gfxram_cycles=%.3f avg_cps_a_writes=%.3f avg_cps_b_reads=%.3f avg_cps_b_writes=%.3f avg_gfxram_writes=%.3f\n",
+								avg_cps_a_cycles, avg_cps_b_cycles, avg_gfxram_cycles,
+								avg_cps_a_writes, avg_cps_b_reads, avg_cps_b_writes, avg_gfxram_writes);
+							osd_printf_info("sf2hf timing gfxram avg_scroll1_cycles=%.3f avg_scroll2_cycles=%.3f avg_scroll3_cycles=%.3f avg_obj_cycles=%.3f avg_other_cycles=%.3f avg_palette_cycles=%.3f avg_unknown_cycles=%.3f\n",
+								avg_gfxram_scroll1_cycles, avg_gfxram_scroll2_cycles, avg_gfxram_scroll3_cycles,
+								avg_gfxram_obj_cycles, avg_gfxram_other_cycles, avg_gfxram_palette_cycles, avg_gfxram_unknown_cycles);
+							osd_printf_info("sf2hf timing writes avg_scroll1=%.3f avg_scroll2=%.3f avg_scroll3=%.3f avg_obj=%.3f avg_other=%.3f avg_palette=%.3f avg_unknown=%.3f\n",
+								avg_gfxram_scroll1_writes, avg_gfxram_scroll2_writes, avg_gfxram_scroll3_writes,
+								avg_gfxram_obj_writes, avg_gfxram_other_writes, avg_gfxram_palette_writes, avg_gfxram_unknown_writes);
+							osd_printf_info("sf2hf timing unknown-pages page0=%d avg_writes=%.3f page1=%d avg_writes=%.3f page2=%d avg_writes=%.3f\n",
+								unknown_page_ids[0], avg_unknown_page0_writes, unknown_page_ids[1], avg_unknown_page1_writes, unknown_page_ids[2], avg_unknown_page2_writes);
+							osd_printf_info("sf2hf timing bases obj=%d scroll1=%d scroll2=%d scroll3=%d other=%d palette=%d\n",
+								obj_base_page, scroll1_base_page, scroll2_base_page, scroll3_base_page, other_base_page, palette_base_page);
+							osd_printf_info("sf2hf timing base-raw obj=%04x scroll1=%04x scroll2=%04x scroll3=%04x other=%04x palette=%04x page_hits obj=%.3f obj_alt=%.3f other=%.3f palette=%.3f\n",
+								obj_base_raw, scroll1_base_raw, scroll2_base_raw, scroll3_base_raw, other_base_raw, palette_base_raw,
+								avg_obj_base_page_writes, avg_obj_alt_page_writes, avg_other_base_page_writes, avg_palette_base_page_writes);
+							osd_printf_info("sf2hf timing hot-blocks b0=%03x avg=%.3f b1=%03x avg=%.3f b2=%03x avg=%.3f b3=%03x avg=%.3f b4=%03x avg=%.3f b5=%03x avg=%.3f\n",
+								hot_block_ids[0], double(hot_block_counts[0]) / m_sf2hf_sample_frames,
+								hot_block_ids[1], double(hot_block_counts[1]) / m_sf2hf_sample_frames,
+								hot_block_ids[2], double(hot_block_counts[2]) / m_sf2hf_sample_frames,
+								hot_block_ids[3], double(hot_block_counts[3]) / m_sf2hf_sample_frames,
+								hot_block_ids[4], double(hot_block_counts[4]) / m_sf2hf_sample_frames,
+								hot_block_ids[5], double(hot_block_counts[5]) / m_sf2hf_sample_frames);
+							osd_printf_info("sf2hf timing probe page4 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+								m_sf2hf_probe_page_min_offset[0], m_sf2hf_probe_page_max_offset[0],
+								avg_probe_page_bin_writes[0][0], avg_probe_page_bin_writes[0][1], avg_probe_page_bin_writes[0][2], avg_probe_page_bin_writes[0][3],
+								avg_probe_page_bin_writes[0][4], avg_probe_page_bin_writes[0][5], avg_probe_page_bin_writes[0][6], avg_probe_page_bin_writes[0][7]);
+							osd_printf_info("sf2hf timing probe page6 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+								m_sf2hf_probe_page_min_offset[1], m_sf2hf_probe_page_max_offset[1],
+								avg_probe_page_bin_writes[1][0], avg_probe_page_bin_writes[1][1], avg_probe_page_bin_writes[1][2], avg_probe_page_bin_writes[1][3],
+								avg_probe_page_bin_writes[1][4], avg_probe_page_bin_writes[1][5], avg_probe_page_bin_writes[1][6], avg_probe_page_bin_writes[1][7]);
+							osd_printf_info("sf2hf timing probe page8 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+								m_sf2hf_probe_page_min_offset[2], m_sf2hf_probe_page_max_offset[2],
+								avg_probe_page_bin_writes[2][0], avg_probe_page_bin_writes[2][1], avg_probe_page_bin_writes[2][2], avg_probe_page_bin_writes[2][3],
+								avg_probe_page_bin_writes[2][4], avg_probe_page_bin_writes[2][5], avg_probe_page_bin_writes[2][6], avg_probe_page_bin_writes[2][7]);
+						}
 						m_sf2hf_timing_confirm_logged = true;
+						m_sf2hf_timing_sample_pending = false;
 					}
-
-					logerror("sf2hf timing frames=%u-%u avg_frame_cycles=%.3f clock_scale=%.6f target_frame_cycles=%.3f\n",
-						m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1,
-						m_sf2hf_vblank_frame,
-						avg_frame_cycles,
-						m_maincpu->clock_scale(),
-						(m_maincpu->clock() * m_maincpu->clock_scale()) / m_screen->frame_period().as_hz());
 					m_sf2hf_sample_cycles = 0;
+					m_sf2hf_sample_stolen_cycles = 0;
+					m_sf2hf_sample_cps_a_cycles = 0;
+					m_sf2hf_sample_cps_b_cycles = 0;
+					m_sf2hf_sample_gfxram_cycles = 0;
+					for (int i = 0; i < SF2HF_GFXRAM_BUCKET_COUNT; i++)
+					{
+						m_sf2hf_sample_gfxram_bucket_cycles[i] = 0;
+						m_sf2hf_sample_gfxram_bucket_writes[i] = 0;
+					}
+					for (int i = 0; i < SF2HF_GFXRAM_BLOCK_COUNT; i++)
+						m_sf2hf_sample_gfxram_block_writes[i] = 0;
+					for (int i = 0; i < SF2HF_GFXRAM_PAGE_COUNT; i++)
+						m_sf2hf_sample_unknown_page_writes[i] = 0;
+					for (int i = 0; i < SF2HF_PROBE_PAGE_COUNT; i++)
+					{
+						m_sf2hf_probe_page_min_offset[i] = 0x3ff;
+						m_sf2hf_probe_page_max_offset[i] = 0;
+						for (int j = 0; j < SF2HF_PROBE_BIN_COUNT; j++)
+							m_sf2hf_probe_page_bin_writes[i][j] = 0;
+					}
+					m_sf2hf_sample_cps_a_writes = 0;
+					m_sf2hf_sample_cps_b_reads = 0;
+					m_sf2hf_sample_cps_b_writes = 0;
+					m_sf2hf_sample_gfxram_writes = 0;
+					m_sf2hf_sample_obj_base_page_writes = 0;
+					m_sf2hf_sample_obj_alt_page_writes = 0;
+					m_sf2hf_sample_other_base_page_writes = 0;
+					m_sf2hf_sample_palette_base_page_writes = 0;
 					m_sf2hf_sample_frames = 0;
 				}
 			}

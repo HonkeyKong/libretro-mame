@@ -140,126 +140,11 @@ void libretro_ext_record_watch_hit(const char* cpuTag,
                                    uint64_t totalCycles);
 
 
-struct libretro_ext_api_v1
+struct libretro_ext_api
 {
-    uint32_t abi_version = 1; // = 1
+    uint32_t abi_version   = 5;
+    uint32_t sizeof_struct = sizeof(libretro_ext_api);
 
-    // Returns MAME driver shortname, e.g. "sf2", "ssf2t", "progear".
-    // Returns nullptr if machine is not running.
-    const char* (*get_driver_name)();
-
-    // Enumerate executing devices (CPUs).  
-    int (*get_cpu_count)();
-
-    // Get CPU tag, e.g. ":maincpu", ":audiocpu".
-    // Returns nullptr on invalid index / machine not running.
-    const char* (*get_cpu_tag)(int cpu_index);
-
-    // Get current PC for CPU at cpu_index.
-    // Returns 0 if unavailable (invalid index, no state iface, machine not running).
-    uint64_t (*get_cpu_pc)(int cpu_index);
-};
-
-struct libretro_ext_api_v2
-{
-    uint32_t abi_version = 2;      // = 2
-    uint32_t sizeof_struct = sizeof(libretro_ext_api_v2); // Initialize here
-
-    // v1 functions (duplicated so v2 is self-contained)
-    const char* (*get_driver_name)();
-    int (*get_cpu_count)();
-    const char* (*get_cpu_tag)(int cpu_index);
-    uint64_t (*get_cpu_pc)(int cpu_index);
-
-    // Address-space reads
-    uint8_t  (*read_u8)(const char* cpu_tag, const char* space, uint64_t addr);
-    uint16_t (*read_u16)(const char* cpu_tag, const char* space, uint64_t addr);
-    uint32_t (*read_u32)(const char* cpu_tag, const char* space, uint64_t addr);
-
-    // Address-space writes
-    void (*write_u8)(const char* cpu_tag, const char* space, uint64_t addr, uint8_t v);
-    void (*write_u16)(const char* cpu_tag, const char* space, uint64_t addr, uint16_t v);
-    void (*write_u32)(const char* cpu_tag, const char* space, uint64_t addr, uint32_t v);
-
-    // Region enumeration
-    int (*get_region_count)();
-    const char* (*get_region_tag)(int index);
-    uint64_t (*get_region_size)(const char* region_tag);
-
-    // Region read/write
-    uint64_t (*read_region)(const char* region_tag, uint64_t offset, void* dst, uint64_t bytes);
-    uint64_t (*write_region)(const char* region_tag, uint64_t offset, const void* src, uint64_t bytes);
-
-    // Global frame counter (from the first screen device)
-    uint64_t (*get_frame_number)();
-    
-    // Machine time in attoseconds (optional, handy for profiling)
-    uint64_t (*get_time_attoseconds)();
-
-    // CPU cycle counters by tag (":maincpu", ":audiocpu", etc.)
-    // uint64_t (*get_cpu_total_cycles)(const char* cpu_tag);
-    uint64_t (*get_cpu_total_cycles_by_tag)(const char* cpu_tag);
-
-    // Watchpoint API
-    void (*clear_watch_rules)();
-    void (*add_watch_rule)(const char* cpuTag, uint64_t start, uint64_t end, uint8_t access, uint8_t width);
-    bool (*get_last_watch_hit)(libretro_ext_watch_hit* outHit);
-    void (*clear_last_watch_hit)();
-    void (*check_watch_hit)(const char* cpuTag, uint64_t pc, uint64_t address, uint32_t value, uint8_t access, uint8_t width, uint64_t totalCycles);
-};
-
-struct libretro_ext_api_v3
-{
-    uint32_t abi_version   = 3;
-    uint32_t sizeof_struct = sizeof(libretro_ext_api_v3);
-
-    // All v2 fields reproduced (self-contained; never remove or reorder)
-    const char* (*get_driver_name)();
-    int         (*get_cpu_count)();
-    const char* (*get_cpu_tag)(int cpu_index);
-    uint64_t    (*get_cpu_pc)(int cpu_index);
-
-    uint8_t  (*read_u8)(const char* cpu_tag, const char* space, uint64_t addr);
-    uint16_t (*read_u16)(const char* cpu_tag, const char* space, uint64_t addr);
-    uint32_t (*read_u32)(const char* cpu_tag, const char* space, uint64_t addr);
-
-    void (*write_u8)(const char* cpu_tag, const char* space, uint64_t addr, uint8_t v);
-    void (*write_u16)(const char* cpu_tag, const char* space, uint64_t addr, uint16_t v);
-    void (*write_u32)(const char* cpu_tag, const char* space, uint64_t addr, uint32_t v);
-
-    int         (*get_region_count)();
-    const char* (*get_region_tag)(int index);
-    uint64_t    (*get_region_size)(const char* region_tag);
-
-    uint64_t (*read_region)(const char* region_tag, uint64_t offset, void* dst, uint64_t bytes);
-    uint64_t (*write_region)(const char* region_tag, uint64_t offset, const void* src, uint64_t bytes);
-
-    uint64_t (*get_frame_number)();
-    uint64_t (*get_time_attoseconds)();
-    uint64_t (*get_cpu_total_cycles_by_tag)(const char* cpu_tag);
-
-    void (*clear_watch_rules)();
-    void (*add_watch_rule)(const char* cpuTag, uint64_t start, uint64_t end, uint8_t access, uint8_t width);
-    bool (*get_last_watch_hit)(libretro_ext_watch_hit* outHit);
-    void (*clear_last_watch_hit)();
-    void (*check_watch_hit)(const char* cpuTag, uint64_t pc, uint64_t address, uint32_t value, uint8_t access, uint8_t width, uint64_t totalCycles);
-
-    // DIP switch API
-    // Returns the number of DIP switch fields in the running machine (0 if no machine).
-    int  (*get_dip_count)();
-    // Fills *out with the descriptor for DIP field at index.  Returns false on bad index.
-    bool (*get_dip_info)(int index, libretro_ext_dip_info* out);
-    // Sets the current value of DIP field at index.  value is automatically masked.
-    // Returns false if the machine is not running or index is out of range.
-    bool (*set_dip_value)(int index, uint32_t value);
-};
-
-struct libretro_ext_api_v4
-{
-    uint32_t abi_version   = 4;
-    uint32_t sizeof_struct = sizeof(libretro_ext_api_v4);
-
-    // All v3 fields reproduced (self-contained; never remove or reorder)
     const char* (*get_driver_name)();
     int         (*get_cpu_count)();
     const char* (*get_cpu_tag)(int cpu_index);
@@ -294,9 +179,11 @@ struct libretro_ext_api_v4
     bool (*get_dip_info)(int index, libretro_ext_dip_info* out);
     bool (*set_dip_value)(int index, uint32_t value);
 
-    // Debug extension switch. Defaults to false and can be toggled at runtime.
     void (*set_debug_extensions_enabled)(bool enabled);
     bool (*get_debug_extensions_enabled)();
+
+    // Restart the current driver's timing capture window if supported.
+    bool (*trigger_timing_capture)();
 };
 
 static void invalidate_region_cache();
@@ -364,12 +251,10 @@ static address_space* get_space_by_tag(running_machine& mach, const char* cpu_ta
 static int  libretro_ext_get_dip_count_impl();
 static bool libretro_ext_get_dip_info_impl(int index, libretro_ext_dip_info* out);
 static bool libretro_ext_set_dip_value_impl(int index, uint32_t value);
+static bool libretro_ext_trigger_timing_capture_impl();
 
 extern "C" {
-    LIBRETRO_EXT_EXPORT const libretro_ext_api_v1* libretro_ext_get_api_v1();
-    LIBRETRO_EXT_EXPORT const libretro_ext_api_v2* libretro_ext_get_api_v2();
-    LIBRETRO_EXT_EXPORT const libretro_ext_api_v3* libretro_ext_get_api_v3();
-    LIBRETRO_EXT_EXPORT const libretro_ext_api_v4* libretro_ext_get_api_v4();
+    LIBRETRO_EXT_EXPORT const libretro_ext_api* libretro_ext_get_api();
 }
 
 #endif // LIBRETRO_EXT_H
