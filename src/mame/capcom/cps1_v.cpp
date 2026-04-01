@@ -2417,13 +2417,27 @@ int cps_state::sf2hf_gfxram_bucket_for_offset(offs_t offset)
 		return SF2HF_GFXRAM_BUCKET_OBJ;
 	if (sf2hf_gfxram_range_contains_word(offset, sf2hf_gfxram_obj_alt_reg_word_base(), m_obj_size / 2))
 		return SF2HF_GFXRAM_BUCKET_OBJ;
-	if (sf2hf_gfxram_range_contains_word(offset, sf2hf_gfxram_other_bus_word_base(), SF2HF_GFXRAM_PAGE_WORDS))
+	if (sf2hf_gfxram_page_matches_reg(offset, CPS1_OTHER_BASE))
 		return SF2HF_GFXRAM_BUCKET_OTHER;
 	if (sf2hf_gfxram_range_contains_offset(offset, CPS1_PALETTE_BASE, m_palette_align, m_palette_size))
 		return SF2HF_GFXRAM_BUCKET_PALETTE;
 	return SF2HF_GFXRAM_BUCKET_UNKNOWN;
 }
 
+
+int cps_state::sf2hf_gfxram_wait_cycles_for_bucket(int bucket) const
+{
+	switch (bucket)
+	{
+		case SF2HF_GFXRAM_BUCKET_SCROLL1: return SF2HF_TIMING_GFXRAM_WAIT_SCROLL1_CYCLES;
+		case SF2HF_GFXRAM_BUCKET_SCROLL2: return SF2HF_TIMING_GFXRAM_WAIT_SCROLL2_CYCLES;
+		case SF2HF_GFXRAM_BUCKET_SCROLL3: return SF2HF_TIMING_GFXRAM_WAIT_SCROLL3_CYCLES;
+		case SF2HF_GFXRAM_BUCKET_OBJ: return SF2HF_TIMING_GFXRAM_WAIT_OBJ_CYCLES;
+		case SF2HF_GFXRAM_BUCKET_OTHER: return SF2HF_TIMING_GFXRAM_WAIT_OTHER_CYCLES;
+		case SF2HF_GFXRAM_BUCKET_PALETTE: return SF2HF_TIMING_GFXRAM_WAIT_PALETTE_CYCLES;
+		default: return SF2HF_TIMING_GFXRAM_WAIT_UNKNOWN_CYCLES;
+	}
+}
 
 uint32_t cps_state::sf2hf_gfxram_page_for_offset(offs_t offset) const
 {
@@ -2451,14 +2465,6 @@ uint32_t cps_state::sf2hf_gfxram_obj_alt_reg_word_base() const
 	uint32_t base = uint32_t(m_cps_a_regs[CPS1_OBJ_BASE] ^ 0x0080) * 256;
 	base &= ~(uint32_t(m_obj_size) - 1);
 	return (base & 0x3ffff) / 2;
-}
-
-
-uint32_t cps_state::sf2hf_gfxram_other_bus_word_base() const
-{
-	// SF2HF appears to hit the whole OTHER_BASE page on the bus, not just the
-	// smaller rowscroll window the renderer consumes directly.
-	return sf2hf_gfxram_reg_word_base(CPS1_OTHER_BASE, 0x1000);
 }
 
 
@@ -2496,15 +2502,32 @@ bool cps_state::sf2hf_gfxram_page_matches_reg(offs_t offset, int reg_offset) con
 
 void cps_state::cps1_gfxram_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 {
-	sf2hf_steal_cycles(SF2HF_TIMING_GFXRAM_WAIT_CYCLES, &m_sf2hf_sample_gfxram_cycles);
+	const int bucket = sf2hf_gfxram_bucket_for_offset(offset);
+	int wait_cycles = sf2hf_gfxram_wait_cycles_for_bucket(bucket);
+	int burst_extra_cycles = 0;
+	if (bucket == SF2HF_GFXRAM_BUCKET_OBJ)
+	{
+		m_sf2hf_frame_obj_writes++;
+		m_sf2hf_frame_obj_run_writes++;
+		if (m_sf2hf_frame_obj_run_writes > m_sf2hf_frame_obj_peak_run_writes)
+			m_sf2hf_frame_obj_peak_run_writes = m_sf2hf_frame_obj_run_writes;
+		if (m_sf2hf_frame_obj_run_writes > SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD)
+			burst_extra_cycles = SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES;
+		wait_cycles += burst_extra_cycles;
+	}
+	else
+	{
+		m_sf2hf_frame_obj_run_writes = 0;
+	}
+	sf2hf_steal_cycles(wait_cycles, &m_sf2hf_sample_gfxram_cycles);
 	const int page = (offset >> 7) & 0x3c0;
 	if (m_sf2hf_timing_calibration && m_maincpu->executing())
 	{
-		const int bucket = sf2hf_gfxram_bucket_for_offset(offset);
 		const uint32_t block_index = ((uint32_t(offset) * sizeof(uint16_t)) / SF2HF_GFXRAM_BLOCK_SIZE) % SF2HF_GFXRAM_BLOCK_COUNT;
 		m_sf2hf_sample_gfxram_writes++;
-		m_sf2hf_sample_gfxram_bucket_cycles[bucket] += SF2HF_TIMING_GFXRAM_WAIT_CYCLES;
+		m_sf2hf_sample_gfxram_bucket_cycles[bucket] += wait_cycles;
 		m_sf2hf_sample_gfxram_bucket_writes[bucket]++;
+		m_sf2hf_sample_obj_burst_cycles += burst_extra_cycles;
 		m_sf2hf_sample_gfxram_block_writes[block_index]++;
 		if (sf2hf_gfxram_page_matches_reg(offset, CPS1_OBJ_BASE))
 			m_sf2hf_sample_obj_base_page_writes++;
@@ -3242,6 +3265,9 @@ void cps_state::screen_vblank_cps1(int state)
 					const double avg_cps_a_cycles = double(m_sf2hf_sample_cps_a_cycles) / m_sf2hf_sample_frames;
 					const double avg_cps_b_cycles = double(m_sf2hf_sample_cps_b_cycles) / m_sf2hf_sample_frames;
 					const double avg_gfxram_cycles = double(m_sf2hf_sample_gfxram_cycles) / m_sf2hf_sample_frames;
+					const double avg_obj_burst_cycles = double(m_sf2hf_sample_obj_burst_cycles) / m_sf2hf_sample_frames;
+					const double avg_frame_obj_writes = double(m_sf2hf_sample_frame_obj_writes) / m_sf2hf_sample_frames;
+					const double avg_frame_obj_peak_run = double(m_sf2hf_sample_frame_obj_peak_run) / m_sf2hf_sample_frames;
 					const double avg_cps_a_writes = double(m_sf2hf_sample_cps_a_writes) / m_sf2hf_sample_frames;
 					const double avg_cps_b_reads = double(m_sf2hf_sample_cps_b_reads) / m_sf2hf_sample_frames;
 					const double avg_cps_b_writes = double(m_sf2hf_sample_cps_b_writes) / m_sf2hf_sample_frames;
@@ -3339,6 +3365,10 @@ void cps_state::screen_vblank_cps1(int state)
 							log_cb(RETRO_LOG_INFO, "sf2hf timing bus avg_cps_a_cycles=%.3f avg_cps_b_cycles=%.3f avg_gfxram_cycles=%.3f avg_cps_a_writes=%.3f avg_cps_b_reads=%.3f avg_cps_b_writes=%.3f avg_gfxram_writes=%.3f\n",
 								avg_cps_a_cycles, avg_cps_b_cycles, avg_gfxram_cycles,
 								avg_cps_a_writes, avg_cps_b_reads, avg_cps_b_writes, avg_gfxram_writes);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing burst avg_obj_burst_cycles=%.3f run_threshold=%d run_extra=%d\n",
+								avg_obj_burst_cycles, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES);
+							log_cb(RETRO_LOG_INFO, "sf2hf timing obj-frame avg_writes=%.3f avg_peak_run=%.3f\n",
+								avg_frame_obj_writes, avg_frame_obj_peak_run);
 							log_cb(RETRO_LOG_INFO, "sf2hf timing gfxram avg_scroll1_cycles=%.3f avg_scroll2_cycles=%.3f avg_scroll3_cycles=%.3f avg_obj_cycles=%.3f avg_other_cycles=%.3f avg_palette_cycles=%.3f avg_unknown_cycles=%.3f\n",
 								avg_gfxram_scroll1_cycles, avg_gfxram_scroll2_cycles, avg_gfxram_scroll3_cycles,
 								avg_gfxram_obj_cycles, avg_gfxram_other_cycles, avg_gfxram_palette_cycles, avg_gfxram_unknown_cycles);
@@ -3380,6 +3410,10 @@ void cps_state::screen_vblank_cps1(int state)
 							osd_printf_info("sf2hf timing bus avg_cps_a_cycles=%.3f avg_cps_b_cycles=%.3f avg_gfxram_cycles=%.3f avg_cps_a_writes=%.3f avg_cps_b_reads=%.3f avg_cps_b_writes=%.3f avg_gfxram_writes=%.3f\n",
 								avg_cps_a_cycles, avg_cps_b_cycles, avg_gfxram_cycles,
 								avg_cps_a_writes, avg_cps_b_reads, avg_cps_b_writes, avg_gfxram_writes);
+							osd_printf_info("sf2hf timing burst avg_obj_burst_cycles=%.3f run_threshold=%d run_extra=%d\n",
+								avg_obj_burst_cycles, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES);
+							osd_printf_info("sf2hf timing obj-frame avg_writes=%.3f avg_peak_run=%.3f\n",
+								avg_frame_obj_writes, avg_frame_obj_peak_run);
 							osd_printf_info("sf2hf timing gfxram avg_scroll1_cycles=%.3f avg_scroll2_cycles=%.3f avg_scroll3_cycles=%.3f avg_obj_cycles=%.3f avg_other_cycles=%.3f avg_palette_cycles=%.3f avg_unknown_cycles=%.3f\n",
 								avg_gfxram_scroll1_cycles, avg_gfxram_scroll2_cycles, avg_gfxram_scroll3_cycles,
 								avg_gfxram_obj_cycles, avg_gfxram_other_cycles, avg_gfxram_palette_cycles, avg_gfxram_unknown_cycles);
@@ -3421,6 +3455,9 @@ void cps_state::screen_vblank_cps1(int state)
 					m_sf2hf_sample_cps_a_cycles = 0;
 					m_sf2hf_sample_cps_b_cycles = 0;
 					m_sf2hf_sample_gfxram_cycles = 0;
+					m_sf2hf_sample_obj_burst_cycles = 0;
+					m_sf2hf_sample_frame_obj_writes = 0;
+					m_sf2hf_sample_frame_obj_peak_run = 0;
 					for (int i = 0; i < SF2HF_GFXRAM_BUCKET_COUNT; i++)
 					{
 						m_sf2hf_sample_gfxram_bucket_cycles[i] = 0;
@@ -3445,12 +3482,20 @@ void cps_state::screen_vblank_cps1(int state)
 					m_sf2hf_sample_obj_alt_page_writes = 0;
 					m_sf2hf_sample_other_base_page_writes = 0;
 					m_sf2hf_sample_palette_base_page_writes = 0;
+					m_sf2hf_frame_obj_writes = 0;
+					m_sf2hf_frame_obj_run_writes = 0;
+					m_sf2hf_frame_obj_peak_run_writes = 0;
 					m_sf2hf_sample_frames = 0;
 				}
 			}
 
+			m_sf2hf_sample_frame_obj_writes += m_sf2hf_frame_obj_writes;
+			m_sf2hf_sample_frame_obj_peak_run += m_sf2hf_frame_obj_peak_run_writes;
 			m_sf2hf_last_vblank_cycles = total_cycles;
 			m_sf2hf_vblank_frame++;
+			m_sf2hf_frame_obj_writes = 0;
+			m_sf2hf_frame_obj_run_writes = 0;
+			m_sf2hf_frame_obj_peak_run_writes = 0;
 		}
 
 		// Get video memory base registers
