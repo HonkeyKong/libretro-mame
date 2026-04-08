@@ -622,6 +622,69 @@ static uint64_t libretro_ext_get_cpu_pc_impl(int cpu_index)
     return (uint64_t)st->pc();
 }
 
+static uint64_t libretro_ext_get_cpu_pc_by_tag_impl(const char* cpu_tag)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !cpu_tag || !cpu_tag[0])
+        return 0;
+
+    device_t* dev = mach->root_device().subdevice(cpu_tag);
+    if (!dev)
+        return 0;
+
+    device_state_interface* st = nullptr;
+    if (!dev->interface(st))
+        return 0;
+
+    const auto genpc = st->state_int(STATE_GENPC);
+    if (genpc != 0)
+        return (uint64_t)genpc;
+
+    return (uint64_t)st->pc();
+}
+
+static bool libretro_ext_read_cpu_state_u64_from_device(device_t* dev, int state_id, uint64_t* out_value)
+{
+    if (!dev || !out_value)
+        return false;
+
+    device_state_interface* st = nullptr;
+    if (!dev->interface(st))
+        return false;
+
+    if (!st->state_find_entry(state_id))
+        return false;
+
+    *out_value = (uint64_t)st->state_int(state_id);
+    return true;
+}
+
+static bool libretro_ext_read_cpu_state_u64_by_index_impl(int cpu_index, int state_id, uint64_t* out_value)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    device_t* dev = nullptr;
+    if (!libretro_ext_get_cpu_by_index(*mach, cpu_index, dev))
+        return false;
+
+    return libretro_ext_read_cpu_state_u64_from_device(dev, state_id, out_value);
+}
+
+static bool libretro_ext_read_cpu_state_u64_by_tag_impl(const char* cpu_tag, int state_id, uint64_t* out_value)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !cpu_tag || !cpu_tag[0])
+        return false;
+
+    device_t* dev = mach->root_device().subdevice(cpu_tag);
+    if (!dev)
+        return false;
+
+    return libretro_ext_read_cpu_state_u64_from_device(dev, state_id, out_value);
+}
+
 static inline void check_exec_triggers(const char* cpuTag, uint64_t pc)
 {
     if (!g_extDebugExtensionsEnabled)
@@ -1063,13 +1126,59 @@ static const libretro_ext_api g_ext_api = {
     libretro_ext_set_debug_extensions_enabled_impl,
     libretro_ext_get_debug_extensions_enabled_impl,
 
-    libretro_ext_trigger_timing_capture_impl
+    libretro_ext_trigger_timing_capture_impl,
+
+    libretro_ext_get_cpu_pc_by_tag_impl,
+    libretro_ext_read_cpu_state_u64_by_index_impl,
+    libretro_ext_read_cpu_state_u64_by_tag_impl
 };
+
+static void libretro_ext_log_api_signature_once(const char* entrypoint)
+{
+    static bool logged = false;
+    if (logged)
+        return;
+
+    logged = true;
+    if (log_cb)
+    {
+        log_cb(RETRO_LOG_INFO,
+               "libretro_ext: %s exported ABI=%u struct_size=%u\n",
+               entrypoint ? entrypoint : "libretro_ext_get_api",
+               (unsigned)g_ext_api.abi_version,
+               (unsigned)g_ext_api.sizeof_struct);
+    }
+    else
+    {
+        std::fprintf(stderr,
+                     "libretro_ext: %s exported ABI=%u struct_size=%u\n",
+                     entrypoint ? entrypoint : "libretro_ext_get_api",
+                     (unsigned)g_ext_api.abi_version,
+                     (unsigned)g_ext_api.sizeof_struct);
+    }
+}
 
 extern "C" {
     LIBRETRO_EXT_EXPORT const libretro_ext_api* libretro_ext_get_api()
     {
+        libretro_ext_log_api_signature_once("libretro_ext_get_api");
         return &g_ext_api;
+    }
+
+    LIBRETRO_EXT_EXPORT const libretro_ext_api* libretro_ext_get_api_v5()
+    {
+        libretro_ext_log_api_signature_once("libretro_ext_get_api_v5");
+        return &g_ext_api;
+    }
+
+    LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_api_abi_version()
+    {
+        return g_ext_api.abi_version;
+    }
+
+    LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_api_struct_size()
+    {
+        return g_ext_api.sizeof_struct;
     }
 }
 #endif // LIBRETRO_EXT_HPP

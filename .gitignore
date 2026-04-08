@@ -51,3 +51,5 @@ regtests/jedutil/output
 /CMakeLists.txt
 /samples
 mxe/
+AGENTS.md
+.codex/

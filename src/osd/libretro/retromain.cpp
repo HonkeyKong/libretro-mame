@@ -399,9 +399,9 @@ void retro_osd_interface::customize_input_type_list(std::vector<input_type_entry
 				entry.defseq(SEQ_TYPE_STANDARD).set(KEYCODE_6, input_seq::or_code, JOYCODE_SELECT_INDEXED(1), input_seq::or_code, GUNCODE_BUTTON6_INDEXED(1));
 				break;
 
-			// Select + X
+			// Tab
 			case IPT_UI_MENU:
-				entry.defseq(SEQ_TYPE_STANDARD).set(KEYCODE_TAB, input_seq::or_code, JOYCODE_SELECT, JOYCODE_BUTTON3);
+				entry.defseq(SEQ_TYPE_STANDARD).set(KEYCODE_TAB);
 				break;
 
 			// Select + Start

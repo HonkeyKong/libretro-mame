@@ -98,6 +98,13 @@ struct libretro_ext_watch_hit
     uint64_t pcHistory[256]{};
 };
 
+enum libretro_ext_cpu_state_id : int32_t
+{
+    LIBRETRO_EXT_STATE_GENPC = -1,
+    LIBRETRO_EXT_STATE_GENPCBASE = -2,
+    LIBRETRO_EXT_STATE_GENFLAGS = -3
+};
+
 // DIP switch descriptor structs (versioned, fixed-size, C ABI safe)
 #define LIBRETRO_EXT_DIP_NAME_LEN      128
 #define LIBRETRO_EXT_DIP_PORT_TAG_LEN   64
@@ -184,6 +191,11 @@ struct libretro_ext_api
 
     // Restart the current driver's timing capture window if supported.
     bool (*trigger_timing_capture)();
+
+    // Extended CPU accessors — added after v5 base; check sizeof_struct before using.
+    uint64_t (*get_cpu_pc_by_tag)(const char* cpu_tag);
+    bool     (*read_cpu_state_u64_by_index)(int cpu_index, int state_id, uint64_t* out_value);
+    bool     (*read_cpu_state_u64_by_tag)(const char* cpu_tag, int state_id, uint64_t* out_value);
 };
 
 static void invalidate_region_cache();
@@ -228,9 +240,12 @@ static uint32_t libretro_ext_read_u32_impl(const char* cpu_tag, const char* spac
 static uint64_t libretro_ext_get_frame_number_impl();
 static uint64_t libretro_ext_get_time_attoseconds_impl();
 static uint64_t libretro_ext_get_cpu_pc_impl(int cpu_index);
+static uint64_t libretro_ext_get_cpu_pc_by_tag_impl(const char* cpu_tag);
 static uint64_t libretro_ext_get_cpu_genpc_impl(int cpu_index);
 static uint64_t libretro_ext_get_region_size_impl(const char* tag);
 static uint64_t libretro_ext_get_cpu_genpcbase_impl(int cpu_index);
+static bool libretro_ext_read_cpu_state_u64_by_index_impl(int cpu_index, int state_id, uint64_t* out_value);
+static bool libretro_ext_read_cpu_state_u64_by_tag_impl(const char* cpu_tag, int state_id, uint64_t* out_value);
 static uint64_t get_state_u64(device_state_interface& st, int state_id);
 static uint64_t libretro_ext_get_cpu_total_cycles_impl(const char* cpu_tag);
 static uint64_t libretro_ext_get_cpu_total_cycles_by_tag_impl(const char* cpu_tag);
@@ -255,6 +270,9 @@ static bool libretro_ext_trigger_timing_capture_impl();
 
 extern "C" {
     LIBRETRO_EXT_EXPORT const libretro_ext_api* libretro_ext_get_api();
+    LIBRETRO_EXT_EXPORT const libretro_ext_api* libretro_ext_get_api_v5();
+    LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_api_abi_version();
+    LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_api_struct_size();
 }
 
 #endif // LIBRETRO_EXT_H

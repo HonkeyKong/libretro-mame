@@ -596,7 +596,7 @@ static void check_variables(void)
    }
 
    var.key   = CORE_NAME "_boot_to_osd";
-   var.value = NULL;
+   var.value = "NULL";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       if (!strcmp(var.value, "enabled"))
