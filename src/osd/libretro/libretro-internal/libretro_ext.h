@@ -83,6 +83,21 @@ struct libretro_ext_watch_rule
     bool enabled = false;
 };
 
+// Pre-read inject rule: when a READ watchpoint fires at a matching address,
+// the core substitutes the delivered value before the CPU instruction consumes it.
+// Requires a watch rule to be installed at the same address (inject fires inside
+// the watchpoint tap). Width 0 = match any access width.
+struct libretro_ext_inject_rule
+{
+    std::string cpuTag;
+    uint64_t start   = 0;
+    uint64_t end     = 0;
+    uint32_t value   = 0;     // override value delivered to the CPU
+    uint8_t  width   = 0;     // 0=any, 1/2/4 bytes
+    bool     enabled = false;
+    bool     oneShot = false; // disable after first successful inject
+};
+
 struct libretro_ext_watch_hit
 {
     bool hit = false;
@@ -132,6 +147,7 @@ struct libretro_ext_dip_info
 extern uint64_t g_extFrameCounter;
 extern libretro_ext_watch_hit g_extLastWatchHit;
 extern std::vector<libretro_ext_watch_rule> g_extWatchRules;
+extern std::vector<libretro_ext_inject_rule> g_extInjectRules;
 extern std::unordered_map<std::string, libretro_ext_pc_ring> g_extPcHistory;
 
 void libretro_ext_record_pc(const char* cpuTag, uint64_t pc);
@@ -146,9 +162,21 @@ void libretro_ext_record_watch_hit(const char* cpuTag,
                                    uint8_t width,
                                    uint64_t totalCycles);
 
+// Checks inject rules for a READ access and, if a rule matches, overwrites
+// *data_inout with the override value. Returns true when injection occurred.
+// Called from points.cpp triggered() inside the __LIBRETRO__ guard.
+bool libretro_ext_try_read_inject(const char* cpuTag,
+                                  uint64_t pc,
+                                  uint64_t address,
+                                  uint8_t  widthBytes,
+                                  uint64_t totalCycles,
+                                  uint64_t* data_inout);
+
 
 struct libretro_ext_api
 {
+    // ABI version tracks the fixed v5 base layout. New optional fields are appended
+    // and must be discovered via sizeof_struct and null checks by frontends.
     uint32_t abi_version   = 5;
     uint32_t sizeof_struct = sizeof(libretro_ext_api);
 
@@ -196,6 +224,24 @@ struct libretro_ext_api
     uint64_t (*get_cpu_pc_by_tag)(const char* cpu_tag);
     bool     (*read_cpu_state_u64_by_index)(int cpu_index, int state_id, uint64_t* out_value);
     bool     (*read_cpu_state_u64_by_tag)(const char* cpu_tag, int state_id, uint64_t* out_value);
+
+    // M68K-focused named register helper. Generic ABI plumbing stays here; register-name
+    // resolution is intentionally implemented only for M68K-family CPUs in the core.
+    bool     (*read_cpu_register_by_tag)(const char* cpu_tag, const char* reg_name, uint64_t* out_value);
+
+    // Register/state write counterparts — same indexing scheme as the read functions above.
+    bool     (*write_cpu_state_u64_by_index)(int cpu_index, int state_id, uint64_t value);
+    bool     (*write_cpu_state_u64_by_tag)(const char* cpu_tag, int state_id, uint64_t value);
+    bool     (*write_cpu_register_by_tag)(const char* cpu_tag, const char* reg_name, uint64_t value);
+
+    // Pre-read inject rules — tail fields appended after ABI v5 base.
+    // Gate with: sizeof_struct >= offsetof(libretro_ext_api, add_inject_rule) + sizeof(add_inject_rule)
+    // add_inject_rule: register a rule; inject fires on next READ watchpoint hit at addr.
+    //   oneShot=true disables the rule after the first successful inject.
+    // clear_inject_rules: remove all inject rules (does not affect watch rules).
+    void (*add_inject_rule)(const char* cpuTag, uint64_t start, uint64_t end,
+                            uint32_t value, uint8_t width, bool oneShot);
+    void (*clear_inject_rules)();
 };
 
 static void invalidate_region_cache();
@@ -218,6 +264,9 @@ static void libretro_ext_check_watch_hit_impl(const char* cpuTag,
                                 uint8_t access,
                                 uint8_t width,
                                 uint64_t totalCycles);
+static void libretro_ext_add_inject_rule_impl(const char* cpuTag, uint64_t start, uint64_t end,
+                                              uint32_t value, uint8_t width, bool oneShot);
+static void libretro_ext_clear_inject_rules_impl();
 
 static inline void check_exec_triggers(const char* cpuTag, uint32_t pc);
 
@@ -246,6 +295,10 @@ static uint64_t libretro_ext_get_region_size_impl(const char* tag);
 static uint64_t libretro_ext_get_cpu_genpcbase_impl(int cpu_index);
 static bool libretro_ext_read_cpu_state_u64_by_index_impl(int cpu_index, int state_id, uint64_t* out_value);
 static bool libretro_ext_read_cpu_state_u64_by_tag_impl(const char* cpu_tag, int state_id, uint64_t* out_value);
+static bool libretro_ext_read_cpu_register_by_tag_impl(const char* cpu_tag, const char* reg_name, uint64_t* out_value);
+static bool libretro_ext_write_cpu_state_u64_by_index_impl(int cpu_index, int state_id, uint64_t value);
+static bool libretro_ext_write_cpu_state_u64_by_tag_impl(const char* cpu_tag, int state_id, uint64_t value);
+static bool libretro_ext_write_cpu_register_by_tag_impl(const char* cpu_tag, const char* reg_name, uint64_t value);
 static uint64_t get_state_u64(device_state_interface& st, int state_id);
 static uint64_t libretro_ext_get_cpu_total_cycles_impl(const char* cpu_tag);
 static uint64_t libretro_ext_get_cpu_total_cycles_by_tag_impl(const char* cpu_tag);

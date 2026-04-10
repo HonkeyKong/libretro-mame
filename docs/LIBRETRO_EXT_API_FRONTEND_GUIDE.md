@@ -6,7 +6,8 @@ This document explains how to consume the non-standard `libretro_ext` API from a
 
 - Driver and CPU metadata (`get_driver_name`, `get_cpu_count`, `get_cpu_tag`)
 - Program counter access (`get_cpu_pc`, `get_cpu_pc_by_tag`)
-- Generic CPU register/state reads by state ID (`read_cpu_state_u64_by_index`, `read_cpu_state_u64_by_tag`)
+- Generic CPU register/state reads and writes by state ID (`read/write_cpu_state_u64_by_index`, `read/write_cpu_state_u64_by_tag`)
+- Named M68K register reads and writes by CPU tag (`read_cpu_register_by_tag`, `write_cpu_register_by_tag`)
 - Arbitrary memory reads/writes in CPU address spaces (`read_u8/u16/u32`, `write_u8/u16/u32`)
 - ROM region reads/writes (`read_region`, `write_region`)
 - Timing and frame counters
@@ -27,6 +28,13 @@ Your frontend should try `libretro_ext_get_api` first, then `libretro_ext_get_ap
 ## ABI and safety rules
 
 The extension is currently ABI version `5`.
+
+The struct may grow by appending optional fields to the end while keeping ABI version `5`.
+That is intentional for ABI safety with older v5 consumers:
+
+- Existing callers that validate `abi_version == 5` keep working.
+- New callers must still gate tail fields with `sizeof_struct`.
+- Appending optional pointers does not disturb the fixed v5 base layout.
 
 At runtime:
 
@@ -123,6 +131,38 @@ Notes:
 - `state_id` values are CPU-core-specific beyond the generic negative IDs.
 - Function returns `false` if CPU tag/index is invalid, state is unavailable, or output pointer is null.
 
+### 3b) Read named M68K register by CPU tag
+
+Use `read_cpu_register_by_tag` when you want common M68K registers without knowing raw state IDs.
+
+Supported names:
+
+- `D0`-`D7`
+- `A0`-`A7`
+- `SP` (alias for `A7`)
+- `PC`
+- `SR`
+- `GENPC`
+- `GENPCBASE`
+
+Notes:
+
+- `PC`, `GENPC`, and `GENPCBASE` are accepted for any CPU that exposes those generic states.
+- M68K-specific names (`D*`, `A*`, `SP`, `SR`) require matching state entries on the target CPU.
+- Frontends must check both `sizeof_struct` and the function pointer before calling.
+
+```c
+uint64_t value = 0;
+if (api->sizeof_struct >= offsetof(struct libretro_ext_api, read_cpu_register_by_tag) + sizeof(api->read_cpu_register_by_tag) &&
+    api->read_cpu_register_by_tag)
+{
+    if (api->read_cpu_register_by_tag(":maincpu", "A5", &value))
+    {
+        // value now contains M68K A5
+    }
+}
+```
+
 ### 4) Read arbitrary emulated memory
 
 ```c
@@ -144,6 +184,54 @@ Spaces currently supported by name:
 if (api->write_u16)
     api->write_u16(":maincpu", "program", 0xFF8002, 0x1234);
 ```
+
+### 6) Write generic CPU state/register by ID
+
+Use `write_cpu_state_u64_by_tag` or `write_cpu_state_u64_by_index` with the same state ID
+scheme as the read variants.
+
+```c
+// Force the PC of CPU 0 to a specific address.
+if (api->write_cpu_state_u64_by_index)
+    api->write_cpu_state_u64_by_index(0, -1 /* STATE_GENPC */, 0x1234);
+
+// Write D0 on the main 68000 using the raw M68K state ID.
+// M68K_D0 is typically 0 in this core; prefer write_cpu_register_by_tag
+// when you want human-readable names instead.
+if (api->write_cpu_state_u64_by_tag)
+    api->write_cpu_state_u64_by_tag(":maincpu", 0 /* M68K_D0 */, 0xBEEF);
+```
+
+Return value is `false` if the CPU or state ID was not found, so always check it.
+
+### 7) Write named M68K register by CPU tag
+
+Use `write_cpu_register_by_tag` when you want human-readable M68K register names.
+The supported names and availability constraints are identical to `read_cpu_register_by_tag`.
+
+```c
+// Check availability — this is a tail field, guard with sizeof_struct.
+if (api->sizeof_struct >= offsetof(struct libretro_ext_api, write_cpu_register_by_tag) +
+                          sizeof(api->write_cpu_register_by_tag) &&
+    api->write_cpu_register_by_tag)
+{
+    // Patch A5 (frame pointer in C programs) to point at a shadow structure.
+    bool ok = api->write_cpu_register_by_tag(":maincpu", "A5", 0xFF8800);
+
+    // Patch the stack pointer.
+    ok = api->write_cpu_register_by_tag(":maincpu", "A7", 0xFFFFF0);
+
+    // Set D0 to an error-return value.
+    ok = api->write_cpu_register_by_tag(":maincpu", "D0", 0x00000001);
+}
+```
+
+Notes:
+
+- Generic names (`PC`, `GENPC`, `GENPCBASE`) can work on non-M68K CPUs when supported.
+- M68K-specific names (`D*`, `A*`, `SP`, `SR`) require matching state entries on the target CPU.
+- Writes are live immediately; the emulated CPU sees the new value on its next access.
+- Writing `PC` via this helper is equivalent to calling `write_cpu_state_u64_by_tag` with `STATE_GENPC`.
 
 ## Suggested frontend wrapper shape
 

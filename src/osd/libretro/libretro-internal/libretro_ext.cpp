@@ -26,12 +26,14 @@ ABI rules:
 #include "libretro_ext.h"
 #include "../frontend/mame/mame.h"
 #include "../../../mame/capcom/cps1.h"
+#include "../../../devices/cpu/m68000/m68kcommon.h"
 
 #include <string>
 #include <vector>
 #include <deque>
 #include <cstring>
 #include <cstdio>
+#include <cctype>
 
 #if defined(_WIN32)
   #define LIBRETRO_EXT_EXPORT extern "C" __declspec(dllexport)
@@ -46,6 +48,7 @@ extern retro_log_printf_t log_cb;
 uint64_t g_extFrameCounter = 0;
 libretro_ext_watch_hit g_extLastWatchHit{};
 std::vector<libretro_ext_watch_rule> g_extWatchRules;
+std::vector<libretro_ext_inject_rule> g_extInjectRules;
 std::unordered_map<std::string, libretro_ext_pc_ring> g_extPcHistory;
 
 static bool g_regionTagsValid = false;
@@ -107,6 +110,7 @@ static void libretro_ext_set_debug_extensions_enabled_impl(bool enabled)
 
     g_extPcHistory.clear();
     g_extWatchRules.clear();
+    g_extInjectRules.clear();
     std::memset(&g_extLastWatchHit, 0, sizeof(g_extLastWatchHit));
     std::memset(&g_lastExecHit, 0, sizeof(g_lastExecHit));
     g_execTriggers.clear();
@@ -211,6 +215,56 @@ void libretro_ext_record_watch_hit(const char* cpuTag,
     /* log_cb(RETRO_LOG_INFO, "Watch hit: CPU=%s PC=%llX Address=%llX Value=%llX Access=%08X Width=%02X TotalCycles=%llX\n",
            cpuTag, pc, address, value, access, width, totalCycles); */
     libretro_ext_check_watch_hit(cpuTag, pc, address, value, access, width, totalCycles);
+}
+
+// ---------------------------------------------------------------------------
+// Pre-read inject: override the value delivered to the CPU on a READ match.
+// Called from points.cpp triggered() before libretro_ext_record_watch_hit.
+// ---------------------------------------------------------------------------
+bool libretro_ext_try_read_inject(const char* cpuTag,
+                                  uint64_t pc,
+                                  uint64_t address,
+                                  uint8_t  widthBytes,
+                                  uint64_t totalCycles,
+                                  uint64_t* data_inout)
+{
+    if (!g_extDebugExtensionsEnabled || !cpuTag || !data_inout)
+        return false;
+
+    for (auto& rule : g_extInjectRules)
+    {
+        if (!rule.enabled)
+            continue;
+        if (rule.cpuTag != cpuTag)
+            continue;
+        if (rule.width && rule.width != widthBytes)
+            continue;
+        if (address < rule.start || address > rule.end)
+            continue;
+
+        const uint64_t original = *data_inout;
+        *data_inout = (uint64_t)rule.value;
+
+#if LIBRETRO_EXT_DEBUG
+        if (log_cb)
+            log_cb(RETRO_LOG_DEBUG,
+                   "libretro_ext: PRE-READ INJECT cpu=%s pc=%llX addr=%llX "
+                   "orig=0x%llX inject=0x%llX rule=[%llX-%llX]\n",
+                   cpuTag,
+                   (unsigned long long)pc,
+                   (unsigned long long)address,
+                   (unsigned long long)original,
+                   (unsigned long long)*data_inout,
+                   (unsigned long long)rule.start,
+                   (unsigned long long)rule.end);
+#endif
+
+        if (rule.oneShot)
+            rule.enabled = false;
+
+        return true;
+    }
+    return false;
 }
 
 static void invalidate_region_cache()
@@ -659,6 +713,71 @@ static bool libretro_ext_read_cpu_state_u64_from_device(device_t* dev, int state
     return true;
 }
 
+static bool libretro_ext_register_name_to_state_id(const char* reg_name, int& out_state_id, bool& out_requires_m68k)
+{
+    if (!reg_name || !reg_name[0])
+        return false;
+
+    out_requires_m68k = false;
+
+    std::string normalized;
+    normalized.reserve(16);
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(reg_name); *p; ++p)
+    {
+        if (std::isspace(*p))
+            continue;
+        normalized.push_back((char)std::toupper(*p));
+    }
+
+    if (normalized.size() == 2 && normalized[0] == 'D' && normalized[1] >= '0' && normalized[1] <= '7')
+    {
+        out_state_id = M68K_D0 + (normalized[1] - '0');
+        out_requires_m68k = true;
+        return true;
+    }
+
+    if (normalized.size() == 2 && normalized[0] == 'A' && normalized[1] >= '0' && normalized[1] <= '7')
+    {
+        out_state_id = M68K_A0 + (normalized[1] - '0');
+        out_requires_m68k = true;
+        return true;
+    }
+
+    if (normalized == "SP")
+    {
+        out_state_id = M68K_A7;
+        out_requires_m68k = true;
+        return true;
+    }
+
+    if (normalized == "PC")
+    {
+        out_state_id = STATE_GENPC;
+        return true;
+    }
+
+    if (normalized == "SR")
+    {
+        out_state_id = M68K_SR;
+        out_requires_m68k = true;
+        return true;
+    }
+
+    if (normalized == "GENPC")
+    {
+        out_state_id = STATE_GENPC;
+        return true;
+    }
+
+    if (normalized == "GENPCBASE")
+    {
+        out_state_id = STATE_GENPCBASE;
+        return true;
+    }
+
+    return false;
+}
+
 static bool libretro_ext_read_cpu_state_u64_by_index_impl(int cpu_index, int state_id, uint64_t* out_value)
 {
     running_machine* mach = libretro_ext_machine();
@@ -683,6 +802,84 @@ static bool libretro_ext_read_cpu_state_u64_by_tag_impl(const char* cpu_tag, int
         return false;
 
     return libretro_ext_read_cpu_state_u64_from_device(dev, state_id, out_value);
+}
+
+static bool libretro_ext_read_cpu_register_by_tag_impl(const char* cpu_tag, const char* reg_name, uint64_t* out_value)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !cpu_tag || !cpu_tag[0] || !out_value)
+        return false;
+
+    device_t* dev = mach->root_device().subdevice(cpu_tag);
+    if (!dev)
+        return false;
+
+    int state_id = 0;
+    bool requires_m68k = false;
+    if (!libretro_ext_register_name_to_state_id(reg_name, state_id, requires_m68k))
+        return false;
+
+    return libretro_ext_read_cpu_state_u64_from_device(dev, state_id, out_value);
+}
+
+static bool libretro_ext_write_cpu_state_u64_to_device(device_t* dev, int state_id, uint64_t value)
+{
+    if (!dev)
+        return false;
+
+    device_state_interface* st = nullptr;
+    if (!dev->interface(st))
+        return false;
+
+    if (!st->state_find_entry(state_id))
+        return false;
+
+    st->set_state_int(state_id, value);
+    return true;
+}
+
+static bool libretro_ext_write_cpu_state_u64_by_index_impl(int cpu_index, int state_id, uint64_t value)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    device_t* dev = nullptr;
+    if (!libretro_ext_get_cpu_by_index(*mach, cpu_index, dev))
+        return false;
+
+    return libretro_ext_write_cpu_state_u64_to_device(dev, state_id, value);
+}
+
+static bool libretro_ext_write_cpu_state_u64_by_tag_impl(const char* cpu_tag, int state_id, uint64_t value)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !cpu_tag || !cpu_tag[0])
+        return false;
+
+    device_t* dev = mach->root_device().subdevice(cpu_tag);
+    if (!dev)
+        return false;
+
+    return libretro_ext_write_cpu_state_u64_to_device(dev, state_id, value);
+}
+
+static bool libretro_ext_write_cpu_register_by_tag_impl(const char* cpu_tag, const char* reg_name, uint64_t value)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !cpu_tag || !cpu_tag[0])
+        return false;
+
+    device_t* dev = mach->root_device().subdevice(cpu_tag);
+    if (!dev)
+        return false;
+
+    int state_id = 0;
+    bool requires_m68k = false;
+    if (!libretro_ext_register_name_to_state_id(reg_name, state_id, requires_m68k))
+        return false;
+
+    return libretro_ext_write_cpu_state_u64_to_device(dev, state_id, value);
 }
 
 static inline void check_exec_triggers(const char* cpuTag, uint64_t pc)
@@ -908,6 +1105,38 @@ static void libretro_ext_clear_watch_rules_impl()
     libretro_ext_clear_native_watchpoints_impl();
 }
 
+static void libretro_ext_add_inject_rule_impl(const char* cpuTag, uint64_t start, uint64_t end,
+                                              uint32_t value, uint8_t width, bool oneShot)
+{
+    if (!g_extDebugExtensionsEnabled || !cpuTag || !cpuTag[0])
+        return;
+
+    libretro_ext_inject_rule rule{};
+    rule.cpuTag  = cpuTag;
+    rule.start   = start;
+    rule.end     = end;
+    rule.value   = value;
+    rule.width   = width;
+    rule.enabled = true;
+    rule.oneShot = oneShot;
+    g_extInjectRules.push_back(rule);
+
+    log_cb(RETRO_LOG_INFO,
+           "libretro_ext: inject rule added cpu=%s start=%llX end=%llX "
+           "value=0x%X width=%u oneShot=%d\n",
+           cpuTag,
+           (unsigned long long)start,
+           (unsigned long long)end,
+           (unsigned)value,
+           (unsigned)width,
+           (int)oneShot);
+}
+
+static void libretro_ext_clear_inject_rules_impl()
+{
+    g_extInjectRules.clear();
+}
+
 static void libretro_ext_add_watch_rule_impl(const char* cpuTag,
                                              uint64_t start,
                                              uint64_t end,
@@ -1130,7 +1359,15 @@ static const libretro_ext_api g_ext_api = {
 
     libretro_ext_get_cpu_pc_by_tag_impl,
     libretro_ext_read_cpu_state_u64_by_index_impl,
-    libretro_ext_read_cpu_state_u64_by_tag_impl
+    libretro_ext_read_cpu_state_u64_by_tag_impl,
+    libretro_ext_read_cpu_register_by_tag_impl,
+
+    libretro_ext_write_cpu_state_u64_by_index_impl,
+    libretro_ext_write_cpu_state_u64_by_tag_impl,
+    libretro_ext_write_cpu_register_by_tag_impl,
+
+    libretro_ext_add_inject_rule_impl,
+    libretro_ext_clear_inject_rules_impl
 };
 
 static void libretro_ext_log_api_signature_once(const char* entrypoint)

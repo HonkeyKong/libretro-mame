@@ -19,6 +19,17 @@
 // Fuck that, forward declare it.
 extern void libretro_ext_record_watch_hit(const char *cpuTag, uint64_t pc, uint64_t address, uint32_t value, uint8_t access, uint8_t width, uint64_t totalCycles);
 
+#ifdef __LIBRETRO__
+// Pre-read inject: returns true and overwrites *data_inout when a matching rule fires.
+extern bool libretro_ext_try_read_inject(const char* cpuTag, uint64_t pc, uint64_t address, uint8_t widthBytes, uint64_t totalCycles, uint64_t* data_inout);
+
+// Side-channel used to pass an inject override from triggered() back to the
+// install() read-tap lambdas, which hold the data& reference the CPU will read.
+// MAME runs a single CPU thread; no concurrency concern here.
+static bool s_inject_pending_active = false;
+static u64  s_inject_pending_value  = 0;
+#endif // __LIBRETRO__
+
 //**************************************************************************
 //  DEBUG BREAKPOINT
 //**************************************************************************
@@ -229,6 +240,10 @@ void debug_watchpoint::install(read_or_write mode)
 					m_start_address[0], m_end_address[0], name,
 					[this](offs_t offset, u8 &data, u8 mem_mask) {
 						triggered(read_or_write::READ, offset, data, mem_mask);
+#ifdef __LIBRETRO__
+						if (s_inject_pending_active)
+							data = (u8)s_inject_pending_value;
+#endif
 					},
 					&m_phr);
 		if (u32(m_type) & u32(mode) & u32(read_or_write::WRITE))
@@ -249,8 +264,13 @@ void debug_watchpoint::install(read_or_write mode)
 					m_phr = m_space.install_read_tap(
 							m_start_address[i], m_end_address[i], name,
 							[this, mask](offs_t offset, u16 &data, u16 mem_mask) {
-								if (mem_mask & mask)
+								if (mem_mask & mask) {
 									triggered(read_or_write::READ, offset, data, mem_mask);
+#ifdef __LIBRETRO__
+									if (s_inject_pending_active)
+										data = (u16)s_inject_pending_value;
+#endif
+								}
 							},
 							&m_phr);
 				if (u32(m_type) & u32(mode) & u32(read_or_write::WRITE))
@@ -273,8 +293,13 @@ void debug_watchpoint::install(read_or_write mode)
 					m_phr = m_space.install_read_tap(
 							m_start_address[i], m_end_address[i], name,
 							[this, mask](offs_t offset, u32 &data, u32 mem_mask) {
-								if (mem_mask & mask)
+								if (mem_mask & mask) {
 									triggered(read_or_write::READ, offset, data, mem_mask);
+#ifdef __LIBRETRO__
+									if (s_inject_pending_active)
+										data = (u32)s_inject_pending_value;
+#endif
+								}
 							},
 							&m_phr);
 				if (u32(m_type) & u32(mode) & u32(read_or_write::WRITE))
@@ -297,8 +322,13 @@ void debug_watchpoint::install(read_or_write mode)
 					m_phr = m_space.install_read_tap(
 							m_start_address[i], m_end_address[i], name,
 							[this, mask](offs_t offset, u64 &data, u64 mem_mask) {
-								if (mem_mask & mask)
+								if (mem_mask & mask) {
 									triggered(read_or_write::READ, offset, data, mem_mask);
+#ifdef __LIBRETRO__
+									if (s_inject_pending_active)
+										data = s_inject_pending_value;
+#endif
+								}
 							},
 							&m_phr);
 				if (u32(m_type) & u32(mode) & u32(read_or_write::WRITE))
@@ -393,14 +423,35 @@ void debug_watchpoint::triggered(read_or_write type, offs_t address, u64 data, u
 		pc = state->pc();
 
 	u8 const width_bytes = u8((size * unit_size) / 8);
-	
+
 	#ifdef __LIBRETRO__
-	// Record PC on Watchpoint hit
+	// Pre-read injection: check inject rules and override the value delivered to the
+	// CPU before recording the watch hit.  Sets s_inject_pending_* so that the
+	// install() read-tap lambda can write the new value back through its data& ref.
+	s_inject_pending_active = false;
+	if (type == read_or_write::READ)
+	{
+		uint64_t inject_val = (uint64_t)data;
+		if (libretro_ext_try_read_inject(
+				m_debugInterface->device().tag(),
+				(uint64_t)pc,
+				(uint64_t)address,
+				width_bytes,
+				(uint64_t)m_debugInterface->device().execute().total_cycles(),
+				&inject_val))
+		{
+			s_inject_pending_active = true;
+			s_inject_pending_value  = inject_val;
+			data = inject_val; // watch hit records the injected value
+		}
+	}
+
+	// Record the hit (value reflects any injection applied above).
 	libretro_ext_record_watch_hit(
 		m_debugInterface->device().tag(),
-		pc,
-		address,
-		data,
+		(uint64_t)pc,
+		(uint64_t)address,
+		(uint32_t)data,
 		u8(type),
 		width_bytes,
 		(uint64_t)m_debugInterface->device().execute().total_cycles()
