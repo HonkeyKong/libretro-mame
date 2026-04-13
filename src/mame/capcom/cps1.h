@@ -162,6 +162,7 @@ public:
 	void init_sf2ceblp();
 	void init_sf2m8();
 	void init_dinohunt();
+	void init_ffightuc();
 	bool trigger_timing_capture();
 
 protected:
@@ -201,6 +202,7 @@ protected:
 	void sf2ceblp_prot_w(uint16_t data);
 	void sf2m3_layer_w(offs_t offset, uint16_t data);
 	uint16_t dinohunt_sound_r();
+	uint16_t ffightuc_cmd_queue_r(offs_t offset);
 	void varthb2_cps_a_w(offs_t offset, uint16_t data);
 	uint16_t pang3b4_prot_r();
 	void pang3b4_prot_w(uint16_t data);
@@ -287,6 +289,7 @@ protected:
 
 	uint16_t m_sf2ceblp_prot = 0;
 	uint16_t m_pang3b4_prot = 0;
+	bool m_ffightuc_fbi_bypass_logged = false;
 	bool m_sf2hf_timing_calibration = false;
 	uint64_t m_sf2hf_last_vblank_cycles = 0;
 	uint64_t m_sf2hf_sample_cycles = 0;

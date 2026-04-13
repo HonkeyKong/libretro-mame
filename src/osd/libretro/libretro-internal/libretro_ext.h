@@ -20,6 +20,7 @@
 
 #define LIBRETRO_EXT_DEBUG 1
 
+#include <deque>
 #include <string>
 #include <cstdint>
 
@@ -83,10 +84,12 @@ struct libretro_ext_watch_rule
     bool enabled = false;
 };
 
-// Pre-read inject rule: when a READ watchpoint fires at a matching address,
-// the core substitutes the delivered value before the CPU instruction consumes it.
-// Requires a watch rule to be installed at the same address (inject fires inside
-// the watchpoint tap). Width 0 = match any access width.
+// Pre-read inject rule: installed as a direct address-space read tap so the
+// override fires inline in the CPU's memory-read path regardless of whether
+// device_debug objects are present.  Width 0 = match any access width.
+// inject_tap holds the RAII handle that keeps the tap registered; it must live
+// as long as the rule.  Use std::deque (not vector) for stable element addresses
+// so the lambda's &rule capture never dangles.
 struct libretro_ext_inject_rule
 {
     std::string cpuTag;
@@ -96,6 +99,13 @@ struct libretro_ext_inject_rule
     uint8_t  width   = 0;     // 0=any, 1/2/4 bytes
     bool     enabled = false;
     bool     oneShot = false; // disable after first successful inject
+    // Value-match guard: inject (and consume oneShot) only when
+    //   (original_bus_value & match_mask) == (match_value & match_mask).
+    // Defaults to false so existing unconditional rules are unaffected.
+    bool     has_match_value = false;
+    uint32_t match_value     = 0;
+    uint32_t match_mask      = 0xFFFFFFFF;
+    memory_passthrough_handler inject_tap; // keeps the read tap alive
 };
 
 struct libretro_ext_watch_hit
@@ -147,7 +157,7 @@ struct libretro_ext_dip_info
 extern uint64_t g_extFrameCounter;
 extern libretro_ext_watch_hit g_extLastWatchHit;
 extern std::vector<libretro_ext_watch_rule> g_extWatchRules;
-extern std::vector<libretro_ext_inject_rule> g_extInjectRules;
+extern std::deque<libretro_ext_inject_rule> g_extInjectRules;
 extern std::unordered_map<std::string, libretro_ext_pc_ring> g_extPcHistory;
 
 void libretro_ext_record_pc(const char* cpuTag, uint64_t pc);
@@ -161,16 +171,6 @@ void libretro_ext_record_watch_hit(const char* cpuTag,
                                    uint8_t access,
                                    uint8_t width,
                                    uint64_t totalCycles);
-
-// Checks inject rules for a READ access and, if a rule matches, overwrites
-// *data_inout with the override value. Returns true when injection occurred.
-// Called from points.cpp triggered() inside the __LIBRETRO__ guard.
-bool libretro_ext_try_read_inject(const char* cpuTag,
-                                  uint64_t pc,
-                                  uint64_t address,
-                                  uint8_t  widthBytes,
-                                  uint64_t totalCycles,
-                                  uint64_t* data_inout);
 
 
 struct libretro_ext_api
@@ -242,6 +242,15 @@ struct libretro_ext_api
     void (*add_inject_rule)(const char* cpuTag, uint64_t start, uint64_t end,
                             uint32_t value, uint8_t width, bool oneShot);
     void (*clear_inject_rules)();
+
+    // Value-matched inject variant — tail field appended after clear_inject_rules.
+    // Gate: sizeof_struct >= offsetof(libretro_ext_api, add_inject_rule_ex) + sizeof(add_inject_rule_ex)
+    // Inject (and optional oneShot consume) fires only when:
+    //   (original_bus_value & matchMask) == (matchValue & matchMask)
+    // Pass hasMatchValue=false for unconditional inject (identical to add_inject_rule).
+    void (*add_inject_rule_ex)(const char* cpuTag, uint64_t start, uint64_t end,
+                               uint32_t value, uint8_t width, bool oneShot,
+                               bool hasMatchValue, uint32_t matchValue, uint32_t matchMask);
 };
 
 static void invalidate_region_cache();
@@ -266,6 +275,9 @@ static void libretro_ext_check_watch_hit_impl(const char* cpuTag,
                                 uint64_t totalCycles);
 static void libretro_ext_add_inject_rule_impl(const char* cpuTag, uint64_t start, uint64_t end,
                                               uint32_t value, uint8_t width, bool oneShot);
+static void libretro_ext_add_inject_rule_ex_impl(const char* cpuTag, uint64_t start, uint64_t end,
+                                                 uint32_t value, uint8_t width, bool oneShot,
+                                                 bool hasMatchValue, uint32_t matchValue, uint32_t matchMask);
 static void libretro_ext_clear_inject_rules_impl();
 
 static inline void check_exec_triggers(const char* cpuTag, uint32_t pc);

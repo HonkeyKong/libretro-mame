@@ -48,7 +48,7 @@ extern retro_log_printf_t log_cb;
 uint64_t g_extFrameCounter = 0;
 libretro_ext_watch_hit g_extLastWatchHit{};
 std::vector<libretro_ext_watch_rule> g_extWatchRules;
-std::vector<libretro_ext_inject_rule> g_extInjectRules;
+std::deque<libretro_ext_inject_rule> g_extInjectRules;
 std::unordered_map<std::string, libretro_ext_pc_ring> g_extPcHistory;
 
 static bool g_regionTagsValid = false;
@@ -218,52 +218,12 @@ void libretro_ext_record_watch_hit(const char* cpuTag,
 }
 
 // ---------------------------------------------------------------------------
-// Pre-read inject: override the value delivered to the CPU on a READ match.
-// Called from points.cpp triggered() before libretro_ext_record_watch_hit.
+// Inject is now handled entirely by direct address-space read taps installed
+// from libretro_ext_add_inject_rule_impl.  This stub exists only so that any
+// remaining reference from points.cpp compiles and links without error.
 // ---------------------------------------------------------------------------
-bool libretro_ext_try_read_inject(const char* cpuTag,
-                                  uint64_t pc,
-                                  uint64_t address,
-                                  uint8_t  widthBytes,
-                                  uint64_t totalCycles,
-                                  uint64_t* data_inout)
+bool libretro_ext_try_read_inject(const char*, uint64_t, uint64_t, uint8_t, uint64_t, uint64_t*)
 {
-    if (!g_extDebugExtensionsEnabled || !cpuTag || !data_inout)
-        return false;
-
-    for (auto& rule : g_extInjectRules)
-    {
-        if (!rule.enabled)
-            continue;
-        if (rule.cpuTag != cpuTag)
-            continue;
-        if (rule.width && rule.width != widthBytes)
-            continue;
-        if (address < rule.start || address > rule.end)
-            continue;
-
-        const uint64_t original = *data_inout;
-        *data_inout = (uint64_t)rule.value;
-
-#if LIBRETRO_EXT_DEBUG
-        if (log_cb)
-            log_cb(RETRO_LOG_DEBUG,
-                   "libretro_ext: PRE-READ INJECT cpu=%s pc=%llX addr=%llX "
-                   "orig=0x%llX inject=0x%llX rule=[%llX-%llX]\n",
-                   cpuTag,
-                   (unsigned long long)pc,
-                   (unsigned long long)address,
-                   (unsigned long long)original,
-                   (unsigned long long)*data_inout,
-                   (unsigned long long)rule.start,
-                   (unsigned long long)rule.end);
-#endif
-
-        if (rule.oneShot)
-            rule.enabled = false;
-
-        return true;
-    }
     return false;
 }
 
@@ -1105,35 +1065,255 @@ static void libretro_ext_clear_watch_rules_impl()
     libretro_ext_clear_native_watchpoints_impl();
 }
 
-static void libretro_ext_add_inject_rule_impl(const char* cpuTag, uint64_t start, uint64_t end,
-                                              uint32_t value, uint8_t width, bool oneShot)
+// ---------------------------------------------------------------------------
+// Shared install core — called by both add_inject_rule_impl and add_inject_rule_ex_impl.
+// hasMatchValue/matchValue/matchMask are the new match-gate fields; when
+// hasMatchValue is false the inject fires unconditionally (legacy behaviour).
+// ---------------------------------------------------------------------------
+static void libretro_ext_install_inject_rule_core(
+    const char* cpuTag, uint64_t start, uint64_t end,
+    uint32_t value, uint8_t width, bool oneShot,
+    bool hasMatchValue, uint32_t matchValue, uint32_t matchMask)
 {
     if (!g_extDebugExtensionsEnabled || !cpuTag || !cpuTag[0])
         return;
 
-    libretro_ext_inject_rule rule{};
-    rule.cpuTag  = cpuTag;
-    rule.start   = start;
-    rule.end     = end;
-    rule.value   = value;
-    rule.width   = width;
-    rule.enabled = true;
-    rule.oneShot = oneShot;
-    g_extInjectRules.push_back(rule);
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+    {
+        log_cb(RETRO_LOG_WARN, "libretro_ext: add_inject_rule called with no running machine\n");
+        return;
+    }
+
+    device_memory_interface* mem = nullptr;
+    {
+        device_t* dev = mach->root_device().subdevice(cpuTag);
+        if (!dev || !dev->interface(mem) || !mem->has_space(AS_PROGRAM))
+        {
+            log_cb(RETRO_LOG_WARN,
+                   "libretro_ext: inject rule: no AS_PROGRAM space for cpu=%s\n", cpuTag);
+            return;
+        }
+    }
+    address_space& space = mem->space(AS_PROGRAM);
+
+    // Construct rule in-place inside the deque so element addresses are stable.
+    // The tap lambda captures &rule by reference; deque guarantees the address
+    // is never invalidated by subsequent push_back / emplace_back.
+    g_extInjectRules.emplace_back();
+    libretro_ext_inject_rule& rule = g_extInjectRules.back();
+    rule.cpuTag          = cpuTag;
+    rule.start           = start;
+    rule.end             = end;
+    rule.value           = value;
+    rule.width           = width;
+    rule.enabled         = true;
+    rule.oneShot         = oneShot;
+    rule.has_match_value = hasMatchValue;
+    rule.match_value     = matchValue;
+    rule.match_mask      = matchMask;
+
+    const std::string tap_name = std::string("inject@") + cpuTag;
+
+    // install_read_tap requires the range to be aligned to the bus granularity.
+    // A 16-bit (68000) space has alignment=2; passing e.g. ff816e-ff816e (low bit
+    // clear on end) throws.  Snap start down and end up to the nearest word boundary.
+    // The lambda still guards with rule.start/rule.end so out-of-range offsets are ignored.
+    const offs_t align_mask = (offs_t)(space.alignment() - 1);
+    const offs_t tap_start  = (offs_t)start & ~align_mask;
+    const offs_t tap_end    = (offs_t)end   |  align_mask;
+
+    // Helper lambda body — identical logic for every data width.
+    // data& is the actual read result the CPU will receive (original bus value);
+    // we modify it directly here, inline in the address-space read call.
+    auto do_inject = [&rule](offs_t offset, uint64_t& data_u64, uint8_t width_bytes)
+    {
+        if (!rule.enabled)
+            return;
+        if (!g_extDebugExtensionsEnabled)
+            return;
+        if ((uint64_t)offset < rule.start || (uint64_t)offset > rule.end)
+            return;
+        if (rule.width != 0 && rule.width != width_bytes)
+            return;
+
+        const uint64_t original = data_u64;
+
+        // Value-match gate: only inject (and consume oneShot) when the original
+        // bus value satisfies the match constraint.  When has_match_value is
+        // false this block is skipped and the inject is unconditional.
+        if (rule.has_match_value)
+        {
+            const uint32_t orig_masked  = (uint32_t)(original         & (uint64_t)rule.match_mask);
+            const uint32_t match_masked = (uint32_t)(rule.match_value & rule.match_mask);
+            if (orig_masked != match_masked)
+            {
+#if LIBRETRO_EXT_DEBUG
+                if (log_cb)
+                    log_cb(RETRO_LOG_DEBUG,
+                           "libretro_ext: INJECT SKIP cpu=%s addr=0x%llX "
+                           "orig=0x%X match=0x%X mask=0x%X (not consumed)\n",
+                           rule.cpuTag.c_str(),
+                           (unsigned long long)(uint64_t)offset,
+                           (unsigned)orig_masked,
+                           (unsigned)match_masked,
+                           (unsigned)rule.match_mask);
+#endif
+                return; // no inject, oneShot not consumed
+            }
+        }
+
+        data_u64 = (uint64_t)rule.value;
+
+        // Get the current CPU PC for logging and watch-hit update.
+        uint64_t pc = 0;
+        uint64_t total_cycles = 0;
+        running_machine* mach2 = libretro_ext_machine();
+        if (mach2)
+        {
+            device_t* dev = mach2->root_device().subdevice(rule.cpuTag.c_str());
+            if (dev)
+            {
+                device_state_interface* st = nullptr;
+                if (dev->interface(st))
+                    pc = (uint64_t)st->pc();
+                device_execute_interface* exec = nullptr;
+                if (dev->interface(exec))
+                    total_cycles = (uint64_t)exec->total_cycles();
+            }
+        }
+
+        const bool consuming_oneshot = rule.oneShot;
+
+#if LIBRETRO_EXT_DEBUG
+        if (log_cb)
+            log_cb(RETRO_LOG_DEBUG,
+                   "libretro_ext: INJECT cpu=%s pc=%llX addr=%llX "
+                   "orig=0x%llX effective=0x%llX width=%u oneShot_consumed=%d rule=[%llX-%llX]\n",
+                   rule.cpuTag.c_str(),
+                   (unsigned long long)pc,
+                   (unsigned long long)(uint64_t)offset,
+                   (unsigned long long)original,
+                   (unsigned long long)data_u64,
+                   (unsigned)width_bytes,
+                   (int)consuming_oneshot,
+                   (unsigned long long)rule.start,
+                   (unsigned long long)rule.end);
+#endif
+
+        // Update the last watch hit value to reflect the effective value so the
+        // frontend's get_last_watch_hit returns effective, not original.
+        if (g_extLastWatchHit.hit && g_extLastWatchHit.address == (uint64_t)offset)
+            g_extLastWatchHit.value = (uint32_t)data_u64;
+
+        // Also stamp a fresh watch hit if a watch rule covers this address, so
+        // the frontend sees an up-to-date record even when the watchpoint tap
+        // fired before the inject tap (later-installed taps fire last in MAME's
+        // passthrough chain, so we always overwrite the stale original value).
+        libretro_ext_record_watch_hit(
+            rule.cpuTag.c_str(), pc, (uint64_t)offset,
+            (uint32_t)data_u64, LIBRETRO_EXT_WATCH_READ, width_bytes, total_cycles);
+
+        if (consuming_oneshot)
+            rule.enabled = false;
+    };
+
+    switch (space.data_width())
+    {
+    case 8:
+        rule.inject_tap = space.install_read_tap(
+            tap_start, tap_end, tap_name,
+            [&rule, do_inject](offs_t offset, u8& data, u8 /*mem_mask*/) mutable
+            {
+                uint64_t v = (uint64_t)data;
+                do_inject(offset, v, 1);
+                data = (u8)v;
+            },
+            &rule.inject_tap);
+        break;
+
+    case 16:
+        rule.inject_tap = space.install_read_tap(
+            tap_start, tap_end, tap_name,
+            [&rule, do_inject](offs_t offset, u16& data, u16 /*mem_mask*/) mutable
+            {
+                uint64_t v = (uint64_t)data;
+                do_inject(offset, v, 2);
+                data = (u16)v;
+            },
+            &rule.inject_tap);
+        break;
+
+    case 32:
+        rule.inject_tap = space.install_read_tap(
+            tap_start, tap_end, tap_name,
+            [&rule, do_inject](offs_t offset, u32& data, u32 /*mem_mask*/) mutable
+            {
+                uint64_t v = (uint64_t)data;
+                do_inject(offset, v, 4);
+                data = (u32)v;
+            },
+            &rule.inject_tap);
+        break;
+
+    case 64:
+        rule.inject_tap = space.install_read_tap(
+            tap_start, tap_end, tap_name,
+            [&rule, do_inject](offs_t offset, u64& data, u64 /*mem_mask*/) mutable
+            {
+                uint64_t v = (uint64_t)data;
+                do_inject(offset, v, 8);
+                data = (u64)v;
+            },
+            &rule.inject_tap);
+        break;
+
+    default:
+        log_cb(RETRO_LOG_WARN,
+               "libretro_ext: inject rule: unsupported data_width=%d for cpu=%s\n",
+               space.data_width(), cpuTag);
+        g_extInjectRules.pop_back(); // undo
+        return;
+    }
 
     log_cb(RETRO_LOG_INFO,
-           "libretro_ext: inject rule added cpu=%s start=%llX end=%llX "
-           "value=0x%X width=%u oneShot=%d\n",
+           "libretro_ext: inject tap installed cpu=%s start=%llX end=%llX "
+           "value=0x%X width=%u oneShot=%d hasMatch=%d matchValue=0x%X matchMask=0x%X "
+           "data_width=%d\n",
            cpuTag,
            (unsigned long long)start,
            (unsigned long long)end,
            (unsigned)value,
            (unsigned)width,
-           (int)oneShot);
+           (int)oneShot,
+           (int)hasMatchValue,
+           (unsigned)matchValue,
+           (unsigned)matchMask,
+           space.data_width());
+}
+
+static void libretro_ext_add_inject_rule_impl(const char* cpuTag, uint64_t start, uint64_t end,
+                                              uint32_t value, uint8_t width, bool oneShot)
+{
+    libretro_ext_install_inject_rule_core(cpuTag, start, end, value, width, oneShot,
+                                          false, 0, 0xFFFFFFFF);
+}
+
+static void libretro_ext_add_inject_rule_ex_impl(const char* cpuTag, uint64_t start, uint64_t end,
+                                                 uint32_t value, uint8_t width, bool oneShot,
+                                                 bool hasMatchValue, uint32_t matchValue,
+                                                 uint32_t matchMask)
+{
+    libretro_ext_install_inject_rule_core(cpuTag, start, end, value, width, oneShot,
+                                          hasMatchValue, matchValue, matchMask);
 }
 
 static void libretro_ext_clear_inject_rules_impl()
 {
+    // Explicitly remove each tap before destroying the rules so the address
+    // space stops dispatching to the lambda before we free the rule structs.
+    for (auto& rule : g_extInjectRules)
+        rule.inject_tap.remove();
     g_extInjectRules.clear();
 }
 
@@ -1367,7 +1547,9 @@ static const libretro_ext_api g_ext_api = {
     libretro_ext_write_cpu_register_by_tag_impl,
 
     libretro_ext_add_inject_rule_impl,
-    libretro_ext_clear_inject_rules_impl
+    libretro_ext_clear_inject_rules_impl,
+
+    libretro_ext_add_inject_rule_ex_impl
 };
 
 static void libretro_ext_log_api_signature_once(const char* entrypoint)
