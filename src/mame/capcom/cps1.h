@@ -272,6 +272,7 @@ protected:
 	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_UNKNOWN_CYCLES = 29;
 	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD = 96;
 	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES = 8;
+	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_OBJ_SWITCH_DECAY = 8;
 	static constexpr int SF2HF_GFXRAM_BUCKET_SCROLL1 = 0;
 	static constexpr int SF2HF_GFXRAM_BUCKET_SCROLL2 = 1;
 	static constexpr int SF2HF_GFXRAM_BUCKET_SCROLL3 = 2;
@@ -300,6 +301,7 @@ protected:
 	uint64_t m_sf2hf_sample_obj_burst_cycles = 0;
 	uint64_t m_sf2hf_sample_frame_obj_writes = 0;
 	uint64_t m_sf2hf_sample_frame_obj_peak_run = 0;
+	uint64_t m_sf2hf_sample_frame_obj_peak_pressure = 0;
 	uint64_t m_sf2hf_sample_frame_obj_page_switches = 0;
 	uint64_t m_sf2hf_sample_gfxram_bucket_cycles[SF2HF_GFXRAM_BUCKET_COUNT]{};
 	uint32_t m_sf2hf_sample_cps_a_writes = 0;
@@ -316,6 +318,8 @@ protected:
 	uint32_t m_sf2hf_frame_obj_writes = 0;
 	uint32_t m_sf2hf_frame_obj_run_writes = 0;
 	uint32_t m_sf2hf_frame_obj_peak_run_writes = 0;
+	uint32_t m_sf2hf_frame_obj_pressure = 0;
+	uint32_t m_sf2hf_frame_obj_peak_pressure = 0;
 	uint32_t m_sf2hf_frame_obj_page_switches = 0;
 	int32_t m_sf2hf_frame_last_obj_page = -1;
 	uint32_t m_sf2hf_probe_pages[SF2HF_PROBE_PAGE_COUNT]{4, 6, 8};
