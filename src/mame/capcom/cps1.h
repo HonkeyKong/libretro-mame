@@ -300,6 +300,7 @@ protected:
 	uint64_t m_sf2hf_sample_obj_burst_cycles = 0;
 	uint64_t m_sf2hf_sample_frame_obj_writes = 0;
 	uint64_t m_sf2hf_sample_frame_obj_peak_run = 0;
+	uint64_t m_sf2hf_sample_frame_obj_page_switches = 0;
 	uint64_t m_sf2hf_sample_gfxram_bucket_cycles[SF2HF_GFXRAM_BUCKET_COUNT]{};
 	uint32_t m_sf2hf_sample_cps_a_writes = 0;
 	uint32_t m_sf2hf_sample_cps_b_reads = 0;
@@ -315,6 +316,8 @@ protected:
 	uint32_t m_sf2hf_frame_obj_writes = 0;
 	uint32_t m_sf2hf_frame_obj_run_writes = 0;
 	uint32_t m_sf2hf_frame_obj_peak_run_writes = 0;
+	uint32_t m_sf2hf_frame_obj_page_switches = 0;
+	int32_t m_sf2hf_frame_last_obj_page = -1;
 	uint32_t m_sf2hf_probe_pages[SF2HF_PROBE_PAGE_COUNT]{4, 6, 8};
 	uint32_t m_sf2hf_probe_page_min_offset[SF2HF_PROBE_PAGE_COUNT]{0x3ff, 0x3ff, 0x3ff};
 	uint32_t m_sf2hf_probe_page_max_offset[SF2HF_PROBE_PAGE_COUNT]{0, 0, 0};

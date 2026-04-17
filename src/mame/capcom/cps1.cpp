@@ -3927,6 +3927,7 @@ MACHINE_START_MEMBER(cps_state,common)
 	save_item(NAME(m_sf2hf_sample_obj_burst_cycles));
 	save_item(NAME(m_sf2hf_sample_frame_obj_writes));
 	save_item(NAME(m_sf2hf_sample_frame_obj_peak_run));
+	save_item(NAME(m_sf2hf_sample_frame_obj_page_switches));
 	save_item(NAME(m_sf2hf_sample_gfxram_bucket_cycles));
 	save_item(NAME(m_sf2hf_sample_cps_a_writes));
 	save_item(NAME(m_sf2hf_sample_cps_b_reads));
@@ -3942,6 +3943,8 @@ MACHINE_START_MEMBER(cps_state,common)
 	save_item(NAME(m_sf2hf_frame_obj_writes));
 	save_item(NAME(m_sf2hf_frame_obj_run_writes));
 	save_item(NAME(m_sf2hf_frame_obj_peak_run_writes));
+	save_item(NAME(m_sf2hf_frame_obj_page_switches));
+	save_item(NAME(m_sf2hf_frame_last_obj_page));
 	save_item(NAME(m_sf2hf_probe_pages));
 	save_item(NAME(m_sf2hf_probe_page_min_offset));
 	save_item(NAME(m_sf2hf_probe_page_max_offset));
@@ -14907,6 +14910,7 @@ void cps_state::reset_sf2hf_timing_sample()
 	m_sf2hf_sample_obj_burst_cycles = 0;
 	m_sf2hf_sample_frame_obj_writes = 0;
 	m_sf2hf_sample_frame_obj_peak_run = 0;
+	m_sf2hf_sample_frame_obj_page_switches = 0;
 	for (int i = 0; i < SF2HF_GFXRAM_BUCKET_COUNT; i++)
 	{
 		m_sf2hf_sample_gfxram_bucket_cycles[i] = 0;
@@ -14934,6 +14938,8 @@ void cps_state::reset_sf2hf_timing_sample()
 	m_sf2hf_frame_obj_writes = 0;
 	m_sf2hf_frame_obj_run_writes = 0;
 	m_sf2hf_frame_obj_peak_run_writes = 0;
+	m_sf2hf_frame_obj_page_switches = 0;
+	m_sf2hf_frame_last_obj_page = -1;
 	m_sf2hf_sample_frames = 0;
 	m_sf2hf_timing_confirm_logged = false;
 }
