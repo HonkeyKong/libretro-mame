@@ -101,13 +101,15 @@ These are approximate results from user timing checks:
 ## Active Sweep Checkpoint
 
 - Current active experiment:
-  - none
-- Restored best checkpoint:
-  - run-length trigger
+  - temporary release fallback locked
+- Restored temporary gold checkpoint:
+  - frame-total burst trigger at `10MHz`
   - `obj = 112`
   - `other = 40`
-  - `run_threshold = 96`
-  - `run_extra = 8`
+  - `frame_threshold = 384`
+  - `frame_extra = 12`
+  - `SF2HF_TIMING_LOGGING_ENABLED = false`
+  - measured exactly `57.3s`
 - Repeat benchmark next candidate:
   - none
 - Last measured failed sweep:
