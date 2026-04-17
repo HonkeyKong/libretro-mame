@@ -2524,7 +2524,7 @@ void cps_state::cps1_gfxram_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 			m_sf2hf_frame_obj_peak_run_writes = m_sf2hf_frame_obj_run_writes;
 		if (m_sf2hf_frame_obj_pressure > m_sf2hf_frame_obj_peak_pressure)
 			m_sf2hf_frame_obj_peak_pressure = m_sf2hf_frame_obj_pressure;
-		if (m_sf2hf_frame_obj_pressure > SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD)
+		if (m_sf2hf_frame_obj_writes > SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD)
 			burst_extra_cycles = SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES;
 		wait_cycles += burst_extra_cycles;
 	}
@@ -3372,97 +3372,101 @@ void cps_state::screen_vblank_cps1(int state)
 
 					if (!m_sf2hf_timing_confirm_logged)
 					{
-						const unsigned start_frame = m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1;
-						const unsigned end_frame = m_sf2hf_vblank_frame;
+						if (SF2HF_TIMING_LOGGING_ENABLED)
+						{
+							const unsigned start_frame = m_sf2hf_vblank_frame - m_sf2hf_sample_frames + 1;
+							const unsigned end_frame = m_sf2hf_vblank_frame;
 #if defined(OSD_RETRO)
-						if (log_cb)
-						{
-							log_cb(RETRO_LOG_INFO, "sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f avg_effective_cycles=%.3f target_frame_cycles=%.3f\n",
-								start_frame, end_frame, avg_frame_cycles, avg_stolen_cycles, avg_effective_cycles, target_frame_cycles);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing bus avg_cps_a_cycles=%.3f avg_cps_b_cycles=%.3f avg_gfxram_cycles=%.3f avg_cps_a_writes=%.3f avg_cps_b_reads=%.3f avg_cps_b_writes=%.3f avg_gfxram_writes=%.3f\n",
-								avg_cps_a_cycles, avg_cps_b_cycles, avg_gfxram_cycles,
-								avg_cps_a_writes, avg_cps_b_reads, avg_cps_b_writes, avg_gfxram_writes);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing burst avg_obj_burst_cycles=%.3f run_threshold=%d run_extra=%d switch_decay=%d\n",
-								avg_obj_burst_cycles, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES, SF2HF_TIMING_GFXRAM_WAIT_OBJ_SWITCH_DECAY);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing obj-frame avg_writes=%.3f avg_peak_run=%.3f avg_peak_pressure=%.3f avg_page_switches=%.3f\n",
-								avg_frame_obj_writes, avg_frame_obj_peak_run, avg_frame_obj_peak_pressure, avg_frame_obj_page_switches);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing gfxram avg_scroll1_cycles=%.3f avg_scroll2_cycles=%.3f avg_scroll3_cycles=%.3f avg_obj_cycles=%.3f avg_other_cycles=%.3f avg_palette_cycles=%.3f avg_unknown_cycles=%.3f\n",
-								avg_gfxram_scroll1_cycles, avg_gfxram_scroll2_cycles, avg_gfxram_scroll3_cycles,
-								avg_gfxram_obj_cycles, avg_gfxram_other_cycles, avg_gfxram_palette_cycles, avg_gfxram_unknown_cycles);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing writes avg_scroll1=%.3f avg_scroll2=%.3f avg_scroll3=%.3f avg_obj=%.3f avg_other=%.3f avg_palette=%.3f avg_unknown=%.3f\n",
-								avg_gfxram_scroll1_writes, avg_gfxram_scroll2_writes, avg_gfxram_scroll3_writes,
-								avg_gfxram_obj_writes, avg_gfxram_other_writes, avg_gfxram_palette_writes, avg_gfxram_unknown_writes);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing unknown-pages page0=%d avg_writes=%.3f page1=%d avg_writes=%.3f page2=%d avg_writes=%.3f\n",
-								unknown_page_ids[0], avg_unknown_page0_writes, unknown_page_ids[1], avg_unknown_page1_writes, unknown_page_ids[2], avg_unknown_page2_writes);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing bases obj=%d scroll1=%d scroll2=%d scroll3=%d other=%d palette=%d\n",
-								obj_base_page, scroll1_base_page, scroll2_base_page, scroll3_base_page, other_base_page, palette_base_page);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing base-raw obj=%04x scroll1=%04x scroll2=%04x scroll3=%04x other=%04x palette=%04x page_hits obj=%.3f obj_alt=%.3f other=%.3f palette=%.3f\n",
-								obj_base_raw, scroll1_base_raw, scroll2_base_raw, scroll3_base_raw, other_base_raw, palette_base_raw,
-								avg_obj_base_page_writes, avg_obj_alt_page_writes, avg_other_base_page_writes, avg_palette_base_page_writes);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing hot-blocks b0=%03x avg=%.3f b1=%03x avg=%.3f b2=%03x avg=%.3f b3=%03x avg=%.3f b4=%03x avg=%.3f b5=%03x avg=%.3f\n",
-								hot_block_ids[0], double(hot_block_counts[0]) / m_sf2hf_sample_frames,
-								hot_block_ids[1], double(hot_block_counts[1]) / m_sf2hf_sample_frames,
-								hot_block_ids[2], double(hot_block_counts[2]) / m_sf2hf_sample_frames,
-								hot_block_ids[3], double(hot_block_counts[3]) / m_sf2hf_sample_frames,
-								hot_block_ids[4], double(hot_block_counts[4]) / m_sf2hf_sample_frames,
-								hot_block_ids[5], double(hot_block_counts[5]) / m_sf2hf_sample_frames);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing probe page4 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
-								m_sf2hf_probe_page_min_offset[0], m_sf2hf_probe_page_max_offset[0],
-								avg_probe_page_bin_writes[0][0], avg_probe_page_bin_writes[0][1], avg_probe_page_bin_writes[0][2], avg_probe_page_bin_writes[0][3],
-								avg_probe_page_bin_writes[0][4], avg_probe_page_bin_writes[0][5], avg_probe_page_bin_writes[0][6], avg_probe_page_bin_writes[0][7]);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing probe page6 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
-								m_sf2hf_probe_page_min_offset[1], m_sf2hf_probe_page_max_offset[1],
-								avg_probe_page_bin_writes[1][0], avg_probe_page_bin_writes[1][1], avg_probe_page_bin_writes[1][2], avg_probe_page_bin_writes[1][3],
-								avg_probe_page_bin_writes[1][4], avg_probe_page_bin_writes[1][5], avg_probe_page_bin_writes[1][6], avg_probe_page_bin_writes[1][7]);
-							log_cb(RETRO_LOG_INFO, "sf2hf timing probe page8 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
-								m_sf2hf_probe_page_min_offset[2], m_sf2hf_probe_page_max_offset[2],
-								avg_probe_page_bin_writes[2][0], avg_probe_page_bin_writes[2][1], avg_probe_page_bin_writes[2][2], avg_probe_page_bin_writes[2][3],
-								avg_probe_page_bin_writes[2][4], avg_probe_page_bin_writes[2][5], avg_probe_page_bin_writes[2][6], avg_probe_page_bin_writes[2][7]);
-						}
-						else
+							if (log_cb)
+							{
+								log_cb(RETRO_LOG_INFO, "sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f avg_effective_cycles=%.3f target_frame_cycles=%.3f\n",
+									start_frame, end_frame, avg_frame_cycles, avg_stolen_cycles, avg_effective_cycles, target_frame_cycles);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing bus avg_cps_a_cycles=%.3f avg_cps_b_cycles=%.3f avg_gfxram_cycles=%.3f avg_cps_a_writes=%.3f avg_cps_b_reads=%.3f avg_cps_b_writes=%.3f avg_gfxram_writes=%.3f\n",
+									avg_cps_a_cycles, avg_cps_b_cycles, avg_gfxram_cycles,
+									avg_cps_a_writes, avg_cps_b_reads, avg_cps_b_writes, avg_gfxram_writes);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing burst avg_obj_burst_cycles=%.3f frame_threshold=%d frame_extra=%d\n",
+									avg_obj_burst_cycles, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing obj-frame avg_writes=%.3f avg_peak_run=%.3f avg_peak_pressure=%.3f avg_page_switches=%.3f\n",
+									avg_frame_obj_writes, avg_frame_obj_peak_run, avg_frame_obj_peak_pressure, avg_frame_obj_page_switches);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing gfxram avg_scroll1_cycles=%.3f avg_scroll2_cycles=%.3f avg_scroll3_cycles=%.3f avg_obj_cycles=%.3f avg_other_cycles=%.3f avg_palette_cycles=%.3f avg_unknown_cycles=%.3f\n",
+									avg_gfxram_scroll1_cycles, avg_gfxram_scroll2_cycles, avg_gfxram_scroll3_cycles,
+									avg_gfxram_obj_cycles, avg_gfxram_other_cycles, avg_gfxram_palette_cycles, avg_gfxram_unknown_cycles);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing writes avg_scroll1=%.3f avg_scroll2=%.3f avg_scroll3=%.3f avg_obj=%.3f avg_other=%.3f avg_palette=%.3f avg_unknown=%.3f\n",
+									avg_gfxram_scroll1_writes, avg_gfxram_scroll2_writes, avg_gfxram_scroll3_writes,
+									avg_gfxram_obj_writes, avg_gfxram_other_writes, avg_gfxram_palette_writes, avg_gfxram_unknown_writes);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing unknown-pages page0=%d avg_writes=%.3f page1=%d avg_writes=%.3f page2=%d avg_writes=%.3f\n",
+									unknown_page_ids[0], avg_unknown_page0_writes, unknown_page_ids[1], avg_unknown_page1_writes, unknown_page_ids[2], avg_unknown_page2_writes);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing bases obj=%d scroll1=%d scroll2=%d scroll3=%d other=%d palette=%d\n",
+									obj_base_page, scroll1_base_page, scroll2_base_page, scroll3_base_page, other_base_page, palette_base_page);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing base-raw obj=%04x scroll1=%04x scroll2=%04x scroll3=%04x other=%04x palette=%04x page_hits obj=%.3f obj_alt=%.3f other=%.3f palette=%.3f\n",
+									obj_base_raw, scroll1_base_raw, scroll2_base_raw, scroll3_base_raw, other_base_raw, palette_base_raw,
+									avg_obj_base_page_writes, avg_obj_alt_page_writes, avg_other_base_page_writes, avg_palette_base_page_writes);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing hot-blocks b0=%03x avg=%.3f b1=%03x avg=%.3f b2=%03x avg=%.3f b3=%03x avg=%.3f b4=%03x avg=%.3f b5=%03x avg=%.3f\n",
+									hot_block_ids[0], double(hot_block_counts[0]) / m_sf2hf_sample_frames,
+									hot_block_ids[1], double(hot_block_counts[1]) / m_sf2hf_sample_frames,
+									hot_block_ids[2], double(hot_block_counts[2]) / m_sf2hf_sample_frames,
+									hot_block_ids[3], double(hot_block_counts[3]) / m_sf2hf_sample_frames,
+									hot_block_ids[4], double(hot_block_counts[4]) / m_sf2hf_sample_frames,
+									hot_block_ids[5], double(hot_block_counts[5]) / m_sf2hf_sample_frames);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing probe page4 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+									m_sf2hf_probe_page_min_offset[0], m_sf2hf_probe_page_max_offset[0],
+									avg_probe_page_bin_writes[0][0], avg_probe_page_bin_writes[0][1], avg_probe_page_bin_writes[0][2], avg_probe_page_bin_writes[0][3],
+									avg_probe_page_bin_writes[0][4], avg_probe_page_bin_writes[0][5], avg_probe_page_bin_writes[0][6], avg_probe_page_bin_writes[0][7]);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing probe page6 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+									m_sf2hf_probe_page_min_offset[1], m_sf2hf_probe_page_max_offset[1],
+									avg_probe_page_bin_writes[1][0], avg_probe_page_bin_writes[1][1], avg_probe_page_bin_writes[1][2], avg_probe_page_bin_writes[1][3],
+									avg_probe_page_bin_writes[1][4], avg_probe_page_bin_writes[1][5], avg_probe_page_bin_writes[1][6], avg_probe_page_bin_writes[1][7]);
+								log_cb(RETRO_LOG_INFO, "sf2hf timing probe page8 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+									m_sf2hf_probe_page_min_offset[2], m_sf2hf_probe_page_max_offset[2],
+									avg_probe_page_bin_writes[2][0], avg_probe_page_bin_writes[2][1], avg_probe_page_bin_writes[2][2], avg_probe_page_bin_writes[2][3],
+									avg_probe_page_bin_writes[2][4], avg_probe_page_bin_writes[2][5], avg_probe_page_bin_writes[2][6], avg_probe_page_bin_writes[2][7]);
+							}
+							else
 #endif
-						{
-							osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f avg_effective_cycles=%.3f target_frame_cycles=%.3f\n",
-								start_frame, end_frame, avg_frame_cycles, avg_stolen_cycles, avg_effective_cycles, target_frame_cycles);
-							osd_printf_info("sf2hf timing bus avg_cps_a_cycles=%.3f avg_cps_b_cycles=%.3f avg_gfxram_cycles=%.3f avg_cps_a_writes=%.3f avg_cps_b_reads=%.3f avg_cps_b_writes=%.3f avg_gfxram_writes=%.3f\n",
-								avg_cps_a_cycles, avg_cps_b_cycles, avg_gfxram_cycles,
-								avg_cps_a_writes, avg_cps_b_reads, avg_cps_b_writes, avg_gfxram_writes);
-							osd_printf_info("sf2hf timing burst avg_obj_burst_cycles=%.3f run_threshold=%d run_extra=%d switch_decay=%d\n",
-								avg_obj_burst_cycles, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES, SF2HF_TIMING_GFXRAM_WAIT_OBJ_SWITCH_DECAY);
-							osd_printf_info("sf2hf timing obj-frame avg_writes=%.3f avg_peak_run=%.3f avg_peak_pressure=%.3f avg_page_switches=%.3f\n",
-								avg_frame_obj_writes, avg_frame_obj_peak_run, avg_frame_obj_peak_pressure, avg_frame_obj_page_switches);
-							osd_printf_info("sf2hf timing gfxram avg_scroll1_cycles=%.3f avg_scroll2_cycles=%.3f avg_scroll3_cycles=%.3f avg_obj_cycles=%.3f avg_other_cycles=%.3f avg_palette_cycles=%.3f avg_unknown_cycles=%.3f\n",
-								avg_gfxram_scroll1_cycles, avg_gfxram_scroll2_cycles, avg_gfxram_scroll3_cycles,
-								avg_gfxram_obj_cycles, avg_gfxram_other_cycles, avg_gfxram_palette_cycles, avg_gfxram_unknown_cycles);
-							osd_printf_info("sf2hf timing writes avg_scroll1=%.3f avg_scroll2=%.3f avg_scroll3=%.3f avg_obj=%.3f avg_other=%.3f avg_palette=%.3f avg_unknown=%.3f\n",
-								avg_gfxram_scroll1_writes, avg_gfxram_scroll2_writes, avg_gfxram_scroll3_writes,
-								avg_gfxram_obj_writes, avg_gfxram_other_writes, avg_gfxram_palette_writes, avg_gfxram_unknown_writes);
-							osd_printf_info("sf2hf timing unknown-pages page0=%d avg_writes=%.3f page1=%d avg_writes=%.3f page2=%d avg_writes=%.3f\n",
-								unknown_page_ids[0], avg_unknown_page0_writes, unknown_page_ids[1], avg_unknown_page1_writes, unknown_page_ids[2], avg_unknown_page2_writes);
-							osd_printf_info("sf2hf timing bases obj=%d scroll1=%d scroll2=%d scroll3=%d other=%d palette=%d\n",
-								obj_base_page, scroll1_base_page, scroll2_base_page, scroll3_base_page, other_base_page, palette_base_page);
-							osd_printf_info("sf2hf timing base-raw obj=%04x scroll1=%04x scroll2=%04x scroll3=%04x other=%04x palette=%04x page_hits obj=%.3f obj_alt=%.3f other=%.3f palette=%.3f\n",
-								obj_base_raw, scroll1_base_raw, scroll2_base_raw, scroll3_base_raw, other_base_raw, palette_base_raw,
-								avg_obj_base_page_writes, avg_obj_alt_page_writes, avg_other_base_page_writes, avg_palette_base_page_writes);
-							osd_printf_info("sf2hf timing hot-blocks b0=%03x avg=%.3f b1=%03x avg=%.3f b2=%03x avg=%.3f b3=%03x avg=%.3f b4=%03x avg=%.3f b5=%03x avg=%.3f\n",
-								hot_block_ids[0], double(hot_block_counts[0]) / m_sf2hf_sample_frames,
-								hot_block_ids[1], double(hot_block_counts[1]) / m_sf2hf_sample_frames,
-								hot_block_ids[2], double(hot_block_counts[2]) / m_sf2hf_sample_frames,
-								hot_block_ids[3], double(hot_block_counts[3]) / m_sf2hf_sample_frames,
-								hot_block_ids[4], double(hot_block_counts[4]) / m_sf2hf_sample_frames,
-								hot_block_ids[5], double(hot_block_counts[5]) / m_sf2hf_sample_frames);
-							osd_printf_info("sf2hf timing probe page4 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
-								m_sf2hf_probe_page_min_offset[0], m_sf2hf_probe_page_max_offset[0],
-								avg_probe_page_bin_writes[0][0], avg_probe_page_bin_writes[0][1], avg_probe_page_bin_writes[0][2], avg_probe_page_bin_writes[0][3],
-								avg_probe_page_bin_writes[0][4], avg_probe_page_bin_writes[0][5], avg_probe_page_bin_writes[0][6], avg_probe_page_bin_writes[0][7]);
-							osd_printf_info("sf2hf timing probe page6 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
-								m_sf2hf_probe_page_min_offset[1], m_sf2hf_probe_page_max_offset[1],
-								avg_probe_page_bin_writes[1][0], avg_probe_page_bin_writes[1][1], avg_probe_page_bin_writes[1][2], avg_probe_page_bin_writes[1][3],
-								avg_probe_page_bin_writes[1][4], avg_probe_page_bin_writes[1][5], avg_probe_page_bin_writes[1][6], avg_probe_page_bin_writes[1][7]);
-							osd_printf_info("sf2hf timing probe page8 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
-								m_sf2hf_probe_page_min_offset[2], m_sf2hf_probe_page_max_offset[2],
-								avg_probe_page_bin_writes[2][0], avg_probe_page_bin_writes[2][1], avg_probe_page_bin_writes[2][2], avg_probe_page_bin_writes[2][3],
-								avg_probe_page_bin_writes[2][4], avg_probe_page_bin_writes[2][5], avg_probe_page_bin_writes[2][6], avg_probe_page_bin_writes[2][7]);
+							{
+								osd_printf_info("sf2hf timing confirmed frames=%u-%u avg_frame_cycles=%.3f avg_stolen_cycles=%.3f avg_effective_cycles=%.3f target_frame_cycles=%.3f\n",
+									start_frame, end_frame, avg_frame_cycles, avg_stolen_cycles, avg_effective_cycles, target_frame_cycles);
+								osd_printf_info("sf2hf timing bus avg_cps_a_cycles=%.3f avg_cps_b_cycles=%.3f avg_gfxram_cycles=%.3f avg_cps_a_writes=%.3f avg_cps_b_reads=%.3f avg_cps_b_writes=%.3f avg_gfxram_writes=%.3f\n",
+									avg_cps_a_cycles, avg_cps_b_cycles, avg_gfxram_cycles,
+									avg_cps_a_writes, avg_cps_b_reads, avg_cps_b_writes, avg_gfxram_writes);
+								osd_printf_info("sf2hf timing burst avg_obj_burst_cycles=%.3f frame_threshold=%d frame_extra=%d\n",
+									avg_obj_burst_cycles, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD, SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES);
+								osd_printf_info("sf2hf timing obj-frame avg_writes=%.3f avg_peak_run=%.3f avg_peak_pressure=%.3f avg_page_switches=%.3f\n",
+									avg_frame_obj_writes, avg_frame_obj_peak_run, avg_frame_obj_peak_pressure, avg_frame_obj_page_switches);
+								osd_printf_info("sf2hf timing gfxram avg_scroll1_cycles=%.3f avg_scroll2_cycles=%.3f avg_scroll3_cycles=%.3f avg_obj_cycles=%.3f avg_other_cycles=%.3f avg_palette_cycles=%.3f avg_unknown_cycles=%.3f\n",
+									avg_gfxram_scroll1_cycles, avg_gfxram_scroll2_cycles, avg_gfxram_scroll3_cycles,
+									avg_gfxram_obj_cycles, avg_gfxram_other_cycles, avg_gfxram_palette_cycles, avg_gfxram_unknown_cycles);
+								osd_printf_info("sf2hf timing writes avg_scroll1=%.3f avg_scroll2=%.3f avg_scroll3=%.3f avg_obj=%.3f avg_other=%.3f avg_palette=%.3f avg_unknown=%.3f\n",
+									avg_gfxram_scroll1_writes, avg_gfxram_scroll2_writes, avg_gfxram_scroll3_writes,
+									avg_gfxram_obj_writes, avg_gfxram_other_writes, avg_gfxram_palette_writes, avg_gfxram_unknown_writes);
+								osd_printf_info("sf2hf timing unknown-pages page0=%d avg_writes=%.3f page1=%d avg_writes=%.3f page2=%d avg_writes=%.3f\n",
+									unknown_page_ids[0], avg_unknown_page0_writes, unknown_page_ids[1], avg_unknown_page1_writes, unknown_page_ids[2], avg_unknown_page2_writes);
+								osd_printf_info("sf2hf timing bases obj=%d scroll1=%d scroll2=%d scroll3=%d other=%d palette=%d\n",
+									obj_base_page, scroll1_base_page, scroll2_base_page, scroll3_base_page, other_base_page, palette_base_page);
+								osd_printf_info("sf2hf timing base-raw obj=%04x scroll1=%04x scroll2=%04x scroll3=%04x other=%04x palette=%04x page_hits obj=%.3f obj_alt=%.3f other=%.3f palette=%.3f\n",
+									obj_base_raw, scroll1_base_raw, scroll2_base_raw, scroll3_base_raw, other_base_raw, palette_base_raw,
+									avg_obj_base_page_writes, avg_obj_alt_page_writes, avg_other_base_page_writes, avg_palette_base_page_writes);
+								osd_printf_info("sf2hf timing hot-blocks b0=%03x avg=%.3f b1=%03x avg=%.3f b2=%03x avg=%.3f b3=%03x avg=%.3f b4=%03x avg=%.3f b5=%03x avg=%.3f\n",
+									hot_block_ids[0], double(hot_block_counts[0]) / m_sf2hf_sample_frames,
+									hot_block_ids[1], double(hot_block_counts[1]) / m_sf2hf_sample_frames,
+									hot_block_ids[2], double(hot_block_counts[2]) / m_sf2hf_sample_frames,
+									hot_block_ids[3], double(hot_block_counts[3]) / m_sf2hf_sample_frames,
+									hot_block_ids[4], double(hot_block_counts[4]) / m_sf2hf_sample_frames,
+									hot_block_ids[5], double(hot_block_counts[5]) / m_sf2hf_sample_frames);
+								osd_printf_info("sf2hf timing probe page4 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+									m_sf2hf_probe_page_min_offset[0], m_sf2hf_probe_page_max_offset[0],
+									avg_probe_page_bin_writes[0][0], avg_probe_page_bin_writes[0][1], avg_probe_page_bin_writes[0][2], avg_probe_page_bin_writes[0][3],
+									avg_probe_page_bin_writes[0][4], avg_probe_page_bin_writes[0][5], avg_probe_page_bin_writes[0][6], avg_probe_page_bin_writes[0][7]);
+								osd_printf_info("sf2hf timing probe page6 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+									m_sf2hf_probe_page_min_offset[1], m_sf2hf_probe_page_max_offset[1],
+									avg_probe_page_bin_writes[1][0], avg_probe_page_bin_writes[1][1], avg_probe_page_bin_writes[1][2], avg_probe_page_bin_writes[1][3],
+									avg_probe_page_bin_writes[1][4], avg_probe_page_bin_writes[1][5], avg_probe_page_bin_writes[1][6], avg_probe_page_bin_writes[1][7]);
+								osd_printf_info("sf2hf timing probe page8 min=%03x max=%03x bins=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+									m_sf2hf_probe_page_min_offset[2], m_sf2hf_probe_page_max_offset[2],
+									avg_probe_page_bin_writes[2][0], avg_probe_page_bin_writes[2][1], avg_probe_page_bin_writes[2][2], avg_probe_page_bin_writes[2][3],
+									avg_probe_page_bin_writes[2][4], avg_probe_page_bin_writes[2][5], avg_probe_page_bin_writes[2][6], avg_probe_page_bin_writes[2][7]);
+							}
+						}
 						}
 						m_sf2hf_timing_confirm_logged = true;
 						m_sf2hf_timing_sample_pending = false;

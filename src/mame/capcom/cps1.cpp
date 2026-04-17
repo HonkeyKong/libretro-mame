@@ -15021,7 +15021,8 @@ bool cps_state::trigger_timing_capture()
 
 	reset_sf2hf_timing_sample();
 	m_sf2hf_timing_sample_pending = true;
-	osd_printf_info("sf2hf timing capture triggered at frame=%u\n", m_sf2hf_vblank_frame);
+	if (SF2HF_TIMING_LOGGING_ENABLED)
+		osd_printf_info("sf2hf timing capture triggered at frame=%u\n", m_sf2hf_vblank_frame);
 	return true;
 }
 
@@ -15332,9 +15333,9 @@ GAME( 1992, wofu,        wof,      qsound,     wof,        cps_state, init_wof, 
 GAME( 1992, wofa,        wof,      qsound,     wof,        cps_state, init_wof,      ROT0,   "Capcom", "Sangokushi II (Asia 921005)", MACHINE_SUPPORTS_SAVE )   // World "warning"
 GAME( 1992, wofj,        wof,      qsound,     wof,        cps_state, init_wof,      ROT0,   "Capcom", "Tenchi wo Kurau II: Sekiheki no Tatakai (Japan 921031)", MACHINE_SUPPORTS_SAVE )
 GAME( 1999, wofhfh,      wof,      wofhfh,     wofhfh,     cps_state, empty_init,    ROT0,   "bootleg", "Huo Feng Huang (Chinese bootleg of Sangokushi II)", MACHINE_SUPPORTS_SAVE )    // 921005 - based on Asia version
-GAME( 1992, sf2hf,       0,        cps1_12MHz, sf2,        cps_state, init_sf2hf_timing, ROT0,   "Capcom", "Street Fighter II': Hyper Fighting (World 921209)", MACHINE_SUPPORTS_SAVE ) // "ETC"
-GAME( 1992, sf2hfu,      sf2hf,    cps1_12MHz, sf2,        cps_state, init_sf2hf_timing, ROT0,   "Capcom", "Street Fighter II': Hyper Fighting (USA 921209)", MACHINE_SUPPORTS_SAVE )
-GAME( 1992, sf2hfj,      sf2hf,    cps1_12MHz, sf2cej,     cps_state, init_sf2hf_timing, ROT0,   "Capcom", "Street Fighter II' Turbo: Hyper Fighting (Japan 921209)", MACHINE_SUPPORTS_SAVE )
+GAME( 1992, sf2hf,       0,        cps1_10MHz, sf2,        cps_state, init_sf2hf_timing, ROT0,   "Capcom", "Street Fighter II': Hyper Fighting (World 921209)", MACHINE_SUPPORTS_SAVE ) // temporary timing fallback
+GAME( 1992, sf2hfu,      sf2hf,    cps1_10MHz, sf2,        cps_state, init_sf2hf_timing, ROT0,   "Capcom", "Street Fighter II': Hyper Fighting (USA 921209)", MACHINE_SUPPORTS_SAVE )
+GAME( 1992, sf2hfj,      sf2hf,    cps1_10MHz, sf2cej,     cps_state, init_sf2hf_timing, ROT0,   "Capcom", "Street Fighter II' Turbo: Hyper Fighting (Japan 921209)", MACHINE_SUPPORTS_SAVE )
 GAME( 1993, dino,        0,        qsound,     dino,       cps_state, init_dino,     ROT0,   "Capcom", "Cadillacs and Dinosaurs (World 930201)", MACHINE_SUPPORTS_SAVE )    // "ETC"
 GAME( 1993, dinou,       dino,     qsound,     dino,       cps_state, init_dino,     ROT0,   "Capcom", "Cadillacs and Dinosaurs (USA 930201)", MACHINE_SUPPORTS_SAVE )
 GAME( 1993, dinoa,       dino,     qsound,     dino,       cps_state, init_dino,     ROT0,   "Capcom", "Cadillacs and Dinosaurs (Asia TW 930223)", MACHINE_SUPPORTS_SAVE ) // Title screen shows "distributed by Hung Hsi Enterprise".

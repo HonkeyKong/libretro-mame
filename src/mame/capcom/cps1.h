@@ -263,6 +263,7 @@ protected:
 
 	// game-specific
 	static constexpr int SF2HF_TIMING_CPS_REG_WAIT_CYCLES = 7;
+	static constexpr bool SF2HF_TIMING_LOGGING_ENABLED = false;
 	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_SCROLL1_CYCLES = 20;
 	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_SCROLL2_CYCLES = 20;
 	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_SCROLL3_CYCLES = 20;
@@ -270,8 +271,8 @@ protected:
 	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_OTHER_CYCLES = 40;
 	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_PALETTE_CYCLES = 20;
 	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_UNKNOWN_CYCLES = 29;
-	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD = 96;
-	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES = 8;
+	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_THRESHOLD = 384;
+	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_OBJ_RUN_EXTRA_CYCLES = 12;
 	static constexpr int SF2HF_TIMING_GFXRAM_WAIT_OBJ_SWITCH_DECAY = 8;
 	static constexpr int SF2HF_GFXRAM_BUCKET_SCROLL1 = 0;
 	static constexpr int SF2HF_GFXRAM_BUCKET_SCROLL2 = 1;
