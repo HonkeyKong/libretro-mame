@@ -25,7 +25,6 @@ ABI rules:
 #include "emu.h"
 #include "libretro_ext.h"
 #include "../frontend/mame/mame.h"
-#include "../../../mame/capcom/cps1.h"
 #include "../../../devices/cpu/m68000/m68kcommon.h"
 
 #include <string>
@@ -62,6 +61,113 @@ static std::deque<std::string> g_memoryMapAddrspaces;
 // DIP switch field cache — rebuilt whenever the machine pointer changes.
 static running_machine* g_dipLastMachine = nullptr;
 static std::vector<ioport_field*> g_dipFields;
+static libretro_ext_trigger_timing_capture_fn g_triggerTimingCapture = nullptr;
+
+static void libretro_ext_clear_inject_rules_impl();
+static void libretro_ext_clear_watch_rules_impl();
+static void ext_clear_exec_triggers_impl();
+
+static bool hasEnabledWatchRule(
+        const char* cpuTag,
+        uint64_t start,
+        uint64_t end,
+        uint8_t access,
+        uint8_t width)
+{
+    for (const auto& rule : g_extWatchRules)
+    {
+        if (!rule.enabled)
+            continue;
+        if (rule.cpuTag == cpuTag
+                && rule.start == start
+                && rule.end == end
+                && rule.access == access
+                && rule.width == width)
+            return true;
+    }
+
+    return false;
+}
+
+static bool hasEnabledInjectRule(
+        const char* cpuTag,
+        uint64_t start,
+        uint64_t end,
+        uint32_t value,
+        uint8_t width,
+        bool oneShot,
+        bool hasMatchValue,
+        uint32_t matchValue,
+        uint32_t matchMask)
+{
+    for (const auto& rule : g_extInjectRules)
+    {
+        if (!rule.enabled)
+            continue;
+        if (rule.cpuTag == cpuTag
+                && rule.start == start
+                && rule.end == end
+                && rule.value == value
+                && rule.width == width
+                && rule.oneShot == oneShot
+                && rule.has_match_value == hasMatchValue
+                && rule.match_value == matchValue
+                && rule.match_mask == matchMask)
+            return true;
+    }
+
+    return false;
+}
+
+static bool hasEnabledExecTrigger(
+        const char* cpuTag,
+        uint64_t pcStart,
+        uint64_t pcEnd,
+        bool oneShot,
+        bool disableAfterHit)
+{
+    for (const auto& trigger : g_execTriggers)
+    {
+        if (!trigger.enabled)
+            continue;
+        if (trigger.cpuTag == cpuTag
+                && trigger.pcStart == pcStart
+                && trigger.pcEnd == pcEnd
+                && trigger.oneShot == oneShot
+                && trigger.disableAfterHit == disableAfterHit)
+            return true;
+    }
+
+    return false;
+}
+
+void libretroExtResetState()
+{
+    libretro_ext_clear_inject_rules_impl();
+    libretro_ext_clear_watch_rules_impl();
+    ext_clear_exec_triggers_impl();
+
+    g_extPcHistory.clear();
+    std::memset(&g_extLastWatchHit, 0, sizeof(g_extLastWatchHit));
+    std::memset(&g_lastExecHit, 0, sizeof(g_lastExecHit));
+
+    g_extFrameCounter = 0;
+    g_execHooksInstalled = false;
+
+    g_memoryMapDescs.clear();
+    g_memoryMapAddrspaces.clear();
+
+    g_regionTagsValid = false;
+    g_regionTags.clear();
+
+    g_dipFields.clear();
+    g_dipLastMachine = nullptr;
+}
+
+void libretro_ext_set_trigger_timing_capture_callback(libretro_ext_trigger_timing_capture_fn callback)
+{
+    g_triggerTimingCapture = callback;
+}
 
 static void libretro_ext_clear_native_watchpoints_impl()
 {
@@ -108,13 +214,7 @@ static void libretro_ext_set_debug_extensions_enabled_impl(bool enabled)
         return;
     }
 
-    g_extPcHistory.clear();
-    g_extWatchRules.clear();
-    g_extInjectRules.clear();
-    std::memset(&g_extLastWatchHit, 0, sizeof(g_extLastWatchHit));
-    std::memset(&g_lastExecHit, 0, sizeof(g_lastExecHit));
-    g_execTriggers.clear();
-    libretro_ext_clear_native_watchpoints_impl();
+    libretroExtResetState();
 }
 
 static bool libretro_ext_get_debug_extensions_enabled_impl()
@@ -124,15 +224,14 @@ static bool libretro_ext_get_debug_extensions_enabled_impl()
 
 static bool libretro_ext_trigger_timing_capture_impl()
 {
+    if (!g_triggerTimingCapture)
+        return false;
+
     running_machine* mach = libretro_ext_machine();
     if (!mach)
         return false;
 
-    cps_state* cps = dynamic_cast<cps_state*>(&mach->root_device());
-    if (!cps)
-        return false;
-
-    return cps->trigger_timing_capture();
+    return g_triggerTimingCapture(mach);
 }
 
 // Lazy way of seeing all devices attached to the running machine
@@ -881,6 +980,9 @@ static void libretro_ext_add_exec_trigger_impl(const char* cpuTag, uint64_t pcSt
     if (!cpuTag || !cpuTag[0])
         return;
 
+    if (hasEnabledExecTrigger(cpuTag, pcStart, pcEnd, oneShot, disableAfterHit))
+        return;
+
     libretro_ext_exec_trigger t;
     t.cpuTag = cpuTag;
     t.pcStart = pcStart;
@@ -1076,6 +1178,9 @@ static void libretro_ext_install_inject_rule_core(
     bool hasMatchValue, uint32_t matchValue, uint32_t matchMask)
 {
     if (!g_extDebugExtensionsEnabled || !cpuTag || !cpuTag[0])
+        return;
+
+    if (hasEnabledInjectRule(cpuTag, start, end, value, width, oneShot, hasMatchValue, matchValue, matchMask))
         return;
 
     running_machine* mach = libretro_ext_machine();
@@ -1329,14 +1434,8 @@ static void libretro_ext_add_watch_rule_impl(const char* cpuTag,
     if (!cpuTag || !cpuTag[0])
         return;
 
-    libretro_ext_watch_rule rule{};
-    rule.cpuTag = cpuTag;
-    rule.start = start;
-    rule.end = end;
-    rule.access = access;
-    rule.width = width;
-    rule.enabled = true;
-    g_extWatchRules.push_back(rule);
+    if (hasEnabledWatchRule(cpuTag, start, end, access, width))
+        return;
 
     running_machine* mach = libretro_ext_machine();
     if (!mach)
@@ -1375,6 +1474,15 @@ static void libretro_ext_add_watch_rule_impl(const char* cpuTag,
 
     if (access & 2)
         dev->debug()->watchpoint_set(space, read_or_write::WRITE, address, length, nullptr, {});
+
+    libretro_ext_watch_rule rule{};
+    rule.cpuTag = cpuTag;
+    rule.start = start;
+    rule.end = end;
+    rule.access = access;
+    rule.width = width;
+    rule.enabled = true;
+    g_extWatchRules.push_back(rule);
 
     log_cb(RETRO_LOG_INFO,
            "libretro_ext: installed watch rule cpu=%s start=%llX end=%llX access=%u width=%u\n",

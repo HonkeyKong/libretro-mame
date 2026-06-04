@@ -160,6 +160,10 @@ extern std::vector<libretro_ext_watch_rule> g_extWatchRules;
 extern std::deque<libretro_ext_inject_rule> g_extInjectRules;
 extern std::unordered_map<std::string, libretro_ext_pc_ring> g_extPcHistory;
 
+using libretro_ext_trigger_timing_capture_fn = bool (*)(running_machine* mach);
+
+void libretroExtResetState();
+void libretro_ext_set_trigger_timing_capture_callback(libretro_ext_trigger_timing_capture_fn callback);
 void libretro_ext_record_pc(const char* cpuTag, uint64_t pc);
 
 void libretro_ext_set_memory_maps(retro_environment_t environ_cb);

@@ -241,6 +241,7 @@ Stephh's log (2006.09.20) :
 
 #include "emu.h"
 #include "cps1.h"
+#include "../../osd/libretro/libretro-internal/libretro_ext.h"
 
 #include "cpu/z80/z80.h"
 #include "cpu/pic16c5x/pic16c5x.h"
@@ -3917,6 +3918,12 @@ GFXDECODE_END
 MACHINE_START_MEMBER(cps_state,common)
 {
 	m_led_cboard.resolve();
+	libretro_ext_set_trigger_timing_capture_callback(
+			[](running_machine* mach) -> bool
+			{
+				cps_state* cps = dynamic_cast<cps_state*>(&mach->root_device());
+				return cps ? cps->trigger_timing_capture() : false;
+			});
 	save_item(NAME(m_sf2hf_timing_calibration));
 	save_item(NAME(m_sf2hf_last_vblank_cycles));
 	save_item(NAME(m_sf2hf_sample_cycles));
@@ -3956,7 +3963,7 @@ MACHINE_START_MEMBER(cps_state,common)
 	save_item(NAME(m_sf2hf_sample_frames));
 	save_item(NAME(m_sf2hf_timing_confirm_logged));
 	save_item(NAME(m_sf2hf_timing_sample_pending));
-	save_item(NAME(m_ffightuc_fbi_bypass_logged));
+	// save_item(NAME(m_ffightuc_fbi_bypass_logged));
 }
 
 MACHINE_START_MEMBER(cps_state,cps1)
@@ -14950,60 +14957,6 @@ void cps_state::reset_sf2hf_timing_sample()
 	m_sf2hf_timing_confirm_logged = false;
 }
 
-// ---------------------------------------------------------------------------
-// Final Fight (USA 900613) - FBI command queue bypass
-//
-// The attract demo queue at 0xFF816E is read by the dispatcher around PC
-// 0x4B6E.  Command word 0x0700 triggers the censored FBI sequence.  We
-// intercept that exact word read while the PC is inside the dispatch
-// routine and return 0xFFFF instead, which is the game's own "skip /
-// negative" sentinel: the dispatcher falls through cleanly, the queue
-// cursor advances, and attract flow continues normally.
-//
-// This handler permanently overlays the mainram read for that one word.
-// The write path is unchanged, so queue state remains coherent.
-// ---------------------------------------------------------------------------
-static constexpr uint32_t FFIGHTUC_DISPATCH_PC_LO  = 0x4B50;
-static constexpr uint32_t FFIGHTUC_DISPATCH_PC_HI  = 0x4BA0;
-static constexpr uint16_t FFIGHTUC_FBI_CMD         = 0x0700;
-static constexpr uint16_t FFIGHTUC_SKIP_SENTINEL   = 0xFFFF;
-// mainram word index for address 0xFF816E: (0xFF816E - 0xFF0000) / 2
-static constexpr offs_t   FFIGHTUC_CMD_MAINRAM_IDX = (0xFF816EU - 0xFF0000U) / 2U;
-
-uint16_t cps_state::ffightuc_cmd_queue_r(offs_t offset)
-{
-    // offset=0 when this handler fires for 0xFF816E; harmless for any
-    // hypothetical adjacent word (offset=1 would be 0xFF8170).
-    const uint16_t cmd = m_mainram[FFIGHTUC_CMD_MAINRAM_IDX + offset];
-
-    if (cmd == FFIGHTUC_FBI_CMD)
-    {
-        const uint32_t pc = (uint32_t)m_maincpu->pc();
-        if (pc >= FFIGHTUC_DISPATCH_PC_LO && pc <= FFIGHTUC_DISPATCH_PC_HI)
-        {
-            if (!m_ffightuc_fbi_bypass_logged)
-            {
-                m_ffightuc_fbi_bypass_logged = true;
-                osd_printf_info("ffightuc FBI bypass core path fired (pc=0x%X)\n", pc);
-            }
-            osd_printf_verbose("ffightuc FBI bypass: pc=0x%X cmd=0x0700 -> 0xFFFF\n", pc);
-            return FFIGHTUC_SKIP_SENTINEL;
-        }
-    }
-
-    return cmd;
-}
-
-void cps_state::init_ffightuc()
-{
-    // Install a narrow read-handler overlay for the one command queue word
-    // we care about.  This is the same mechanism used for other per-game
-    // protection overrides in this driver and survives machine soft-reset.
-    m_maincpu->space(AS_PROGRAM).install_read_handler(
-        0xFF816E, 0xFF816F,
-        read16sm_delegate(*this, FUNC(cps_state::ffightuc_cmd_queue_r)));
-}
-
 void cps_state::init_sf2hf_timing()
 {
 	m_sf2hf_timing_calibration = true;
@@ -15177,7 +15130,7 @@ GAME( 1989, ffightu,     ffight,   cps1_10MHz, ffight,     cps_state, empty_init
 GAME( 1989, ffightu1,    ffight,   cps1_10MHz, ffight,     cps_state, empty_init,    ROT0,   "Capcom", "Final Fight (USA, set 2)", MACHINE_SUPPORTS_SAVE )
 GAME( 1989, ffightua,    ffight,   cps1_10MHz, ffight,     cps_state, empty_init,    ROT0,   "Capcom", "Final Fight (USA 900112)", MACHINE_SUPPORTS_SAVE )
 GAME( 1989, ffightub,    ffight,   cps1_10MHz, ffight,     cps_state, empty_init,    ROT0,   "Capcom", "Final Fight (USA 900424)", MACHINE_SUPPORTS_SAVE )
-GAME( 1989, ffightuc,    ffight,   cps1_10MHz, ffight,     cps_state, init_ffightuc, ROT0,   "Capcom", "Final Fight (USA 900613)", MACHINE_SUPPORTS_SAVE )
+GAME( 1989, ffightuc,    ffight,   cps1_10MHz, ffight,     cps_state, empty_init, 	 ROT0,   "Capcom", "Final Fight (USA 900613)", MACHINE_SUPPORTS_SAVE )
 GAME( 1989, ffightj,     ffight,   cps1_10MHz, ffight,     cps_state, empty_init,    ROT0,   "Capcom", "Final Fight (Japan)", MACHINE_SUPPORTS_SAVE )
 GAME( 1989, ffightj1,    ffight,   cps1_10MHz, ffight,     cps_state, empty_init,    ROT0,   "Capcom", "Final Fight (Japan 900112)", MACHINE_SUPPORTS_SAVE )
 GAME( 1989, ffightj2,    ffight,   cps1_10MHz, ffight,     cps_state, empty_init,    ROT0,   "Capcom", "Final Fight (Japan 900305)", MACHINE_SUPPORTS_SAVE )

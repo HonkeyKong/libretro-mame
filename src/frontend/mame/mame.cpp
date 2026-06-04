@@ -39,6 +39,7 @@ int ENDEXEC = 0;
 extern int RLOOP;
 extern mame_machine_manager *retro_manager;
 extern core_options *retro_global_options;
+extern void libretroExtResetState();
 extern void retro_loop(running_machine *machine);
 extern void retro_execute();
 extern void free_man();
@@ -78,6 +79,7 @@ void free_machineconfig()
 
 void retro_finish()
 {
+	libretroExtResetState();
 	retro_global_machine->retro_machine_exit();
 
 	free_machineconfig();
@@ -96,12 +98,14 @@ void retro_main_loop()
 
 		if (mfirst)
 		{
+			libretroExtResetState();
 			//restart a new driver from UI
 			retro_execute();
 		}
 		else
 		{
 			RLOOP = 0;
+			libretroExtResetState();
 
 			free_machineconfig();
 

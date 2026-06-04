@@ -915,6 +915,7 @@ void retro_run(void)
 bool retro_load_game(const struct retro_game_info *info)
 {
    retro_load_ok = false;
+   libretroExtResetState();
 
    check_variables();
 

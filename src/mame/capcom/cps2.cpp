@@ -620,7 +620,6 @@ Stephh's inputs notes (based on some tests on the "parent" set) :
 ***************************************************************************/
 
 #include "emu.h"
-
 #include "cps1.h"
 #include "cps2comm.h"
 #include "cps2crypt.h"
@@ -682,6 +681,7 @@ protected:
 	virtual void video_start() override ATTR_COLD;
 
 private:
+	void applyCps2DigitalVolume();
 	void init_digital_volume();
 	uint16_t gigaman2_dummyqsound_r(offs_t offset);
 	void gigaman2_dummyqsound_w(offs_t offset, uint16_t data);
@@ -1195,18 +1195,22 @@ void cps2_state::cps2_eeprom_port_w(offs_t offset, uint16_t data, uint16_t mem_m
  *
  *************************************/
 
+void cps2_state::applyCps2DigitalVolume()
+{
+	constexpr double cps2VolumeBoost = 1.5;
+
+	m_cps2digitalvolumelevel = 39;
+
+	if (m_qsound)
+	{
+		m_qsound->set_output_gain(0, cps2VolumeBoost);
+		m_qsound->set_output_gain(1, cps2VolumeBoost);
+	}
+}
+
 TIMER_CALLBACK_MEMBER(cps2_state::cps2_update_digital_volume)
 {
-	int vol_button_state = ioport("DIGITALVOL")->read();
-
-	if (vol_button_state & 0x01) m_cps2digitalvolumelevel -= 1;
-	if (vol_button_state & 0x02) m_cps2digitalvolumelevel += 1;
-
-	if (m_cps2digitalvolumelevel > 39) m_cps2digitalvolumelevel = 39;
-	if (m_cps2digitalvolumelevel < 0) m_cps2digitalvolumelevel = 0;
-
-	m_qsound->set_output_gain(0, m_cps2digitalvolumelevel / 39.0);
-	m_qsound->set_output_gain(1, m_cps2digitalvolumelevel / 39.0);
+	applyCps2DigitalVolume();
 }
 
 uint16_t cps2_state::cps2_qsound_volume_r()
@@ -10904,6 +10908,7 @@ void cps2_state::init_digital_volume()
 {
 	m_cps2digitalvolumelevel = 39; // maximum
 	m_cps2disabledigitalvolume = 0;
+	applyCps2DigitalVolume();
 
 	// create a timer to update our volume state from the fake switches - read it every 6 frames or so to enable some granularity
 	m_digital_volume_timer = timer_alloc(FUNC(cps2_state::cps2_update_digital_volume), this);
