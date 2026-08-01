@@ -2285,6 +2285,7 @@ void cps3_state::machine_start()
 	save_item(NAME(m_ss_vscroll));
 	save_item(NAME(m_ss_pal_base));
 	save_item(NAME(m_spritelist_dma));
+	save_item(NAME(m_user5StaticDataReady));
 
 	save_pointer(NAME(m_eeprom), 0x80/4);
 }
@@ -2313,6 +2314,8 @@ void cps3_state::device_post_load()
 // make a copy in the regions we execute code / draw gfx from
 void cps3_state::copy_from_nvram()
 {
+	m_user5StaticDataReady = false;
+
 	u32* romdata = (u32*)m_user4;
 	u32* romdata2 = (u32*)m_decrypted_gamerom;
 	/* copy + decrypt program roms which have been loaded from flashroms/nvram */
@@ -2373,6 +2376,101 @@ void cps3_state::copy_from_nvram()
 				}
 			}
 			flashnum+=2;
+		}
+	}
+
+	m_user5StaticDataReady = (m_user5 != nullptr);
+}
+
+bool cps3_state::getStaticGameDataRegion(const void*& base, uint64_t& size) const
+{
+	base = nullptr;
+	size = 0;
+
+	if (!m_user5 || !m_user5StaticDataReady)
+		return false;
+
+	bool hasFlashSource = false;
+	for (int simmBank = 2; simmBank < 7 && !hasFlashSource; simmBank++)
+	{
+		for (int chip = 0; chip < 8; chip++)
+		{
+			if (m_simm[simmBank][chip] != nullptr)
+			{
+				hasFlashSource = true;
+				break;
+			}
+		}
+	}
+
+	if (!hasFlashSource)
+		return false;
+
+	base = m_user5;
+	size = m_user5_region ? m_user5_region->bytes() : USER5REGION_LENGTH;
+	return size != 0;
+}
+
+void cps3_state::dumpLibretroExtInventory() const
+{
+	logerror("libretro_ext: cps3 inventory system=%s maincpu=%s user4_region=%s(%u) user5_region=%s(%u) user5_ready=%d\n",
+		machine().system().name,
+		m_maincpu->tag(),
+		m_user4_region ? "present" : "absent",
+		m_user4_region ? m_user4_region->bytes() : 0U,
+		m_user5_region ? "present" : "absent",
+		m_user5_region ? m_user5_region->bytes() : 0U,
+		m_user5StaticDataReady ? 1 : 0);
+
+	logerror("libretro_ext: cps3 memory shares mainram=%s(%zu) spriteram=%s(%zu) colourram=%s(%zu) eeprom=%s\n",
+		m_mainram.target() ? "present" : "null",
+		m_mainram.bytes(),
+		m_spriteram.target() ? "present" : "null",
+		m_spriteram.bytes(),
+		m_colourram.target() ? "present" : "null",
+		m_colourram.bytes(),
+		m_eeprom ? "present" : "null");
+	logerror("libretro_ext: cps3 user4_ptr=%p user5_ptr=%p\n", m_user4, m_user5);
+	logerror("libretro_ext: cps3 note: SIMM/flash/runtime RAM state is split across memory regions, device address spaces, and shared pointers\n");
+
+	device_memory_interface* maincpu_mem = nullptr;
+	if (m_maincpu->interface(maincpu_mem) && maincpu_mem != nullptr)
+	{
+	for (int space = AS_PROGRAM; space <= AS_OPCODES; ++space)
+	{
+		if (!maincpu_mem->has_logical_space(space))
+			continue;
+
+		const address_space_config* config = maincpu_mem->logical_space_config(space);
+		logerror("libretro_ext: cps3 maincpu space=%s data_width=%d addr_width=%d addr_shift=%d endian=%s octal=%d\n",
+			config ? config->name() : "<null>",
+			config ? config->data_width() : 0,
+			config ? config->addr_width() : 0,
+			config ? config->addr_shift() : 0,
+			config ? (config->endianness() == ENDIANNESS_BIG ? "big" : (config->endianness() == ENDIANNESS_LITTLE ? "little" : "native")) : "unknown",
+			config ? (config->is_octal() ? 1 : 0) : 0);
+	}
+	}
+
+	for (int bank = 0; bank < 7; ++bank)
+	{
+		int present_count = 0;
+		for (int chip = 0; chip < 8; ++chip)
+			present_count += (m_simm[bank][chip] != nullptr) ? 1 : 0;
+
+		if (present_count == 0)
+			continue;
+
+		logerror("libretro_ext: cps3 simm bank=%d present_slots=%d\n", bank + 1, present_count);
+		for (int chip = 0; chip < 8; ++chip)
+		{
+			if (m_simm[bank][chip] == nullptr)
+				continue;
+
+			logerror("libretro_ext: cps3 simm tag=%s bank=%d slot=%d\n",
+				m_simm[bank][chip]->tag(),
+				bank + 1,
+				chip);
 		}
 	}
 }

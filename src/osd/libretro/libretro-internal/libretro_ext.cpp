@@ -26,13 +26,16 @@ ABI rules:
 #include "libretro_ext.h"
 #include "../frontend/mame/mame.h"
 #include "../../../devices/cpu/m68000/m68kcommon.h"
+#include "../../../mame/capcom/cps3.h"
 
 #include <string>
 #include <vector>
 #include <deque>
+#include <unordered_set>
 #include <cstring>
 #include <cstdio>
 #include <cctype>
+#include <chrono>
 
 #if defined(_WIN32)
   #define LIBRETRO_EXT_EXPORT extern "C" __declspec(dllexport)
@@ -53,10 +56,31 @@ std::unordered_map<std::string, libretro_ext_pc_ring> g_extPcHistory;
 static bool g_regionTagsValid = false;
 static bool g_execHooksInstalled = false;
 static std::vector<std::string> g_regionTags;
+static bool g_staticRegionsValid = false;
+static std::vector<libretro_ext_static_region_info> g_staticRegions;
+static std::unordered_set<std::string> g_staticRegionTags;
+static bool g_shareInfosValid = false;
+static std::vector<libretro_ext_share_info> g_shareInfos;
+static bool g_rollbackSupported = false;
+static uint64_t g_rollbackFullSize = 0;
+static uint64_t g_rollbackCompactSize = 0;
+static bool g_rollbackAvailabilityLogged = false;
 static libretro_ext_exec_hit g_lastExecHit = {};
 static std::vector<libretro_ext_exec_trigger> g_execTriggers;
 static std::vector<retro_memory_descriptor> g_memoryMapDescs;
 static std::deque<std::string> g_memoryMapAddrspaces;
+
+static constexpr uint16_t kRollbackStateFormatVersion = 1;
+static constexpr uint16_t kRollbackDeltaFormatVersion = 1;
+static constexpr uint32_t kRollbackStateMagic = 0x4b424c52U;   // 'RLBK'
+static constexpr uint32_t kRollbackDeltaMagic = 0x4c454452U;   // 'RDEL'
+static constexpr uint32_t kRollbackPreferredBlockSize = 256;
+static bool g_rollbackDiagnosticsEnabled = false;
+static bool g_rollbackMetadataValid = false;
+static uint64_t g_rollbackCompatibilityId = 0;
+static uint64_t g_rollbackStateSize = 0;
+static uint64_t g_rollbackPayloadSize = 0;
+static uint64_t g_rollbackDeltaMaxSize = 0;
 
 // DIP switch field cache — rebuilt whenever the machine pointer changes.
 static running_machine* g_dipLastMachine = nullptr;
@@ -148,8 +172,8 @@ void libretroExtResetState()
     ext_clear_exec_triggers_impl();
 
     g_extPcHistory.clear();
-    std::memset(&g_extLastWatchHit, 0, sizeof(g_extLastWatchHit));
-    std::memset(&g_lastExecHit, 0, sizeof(g_lastExecHit));
+    g_extLastWatchHit = {};
+    g_lastExecHit = {};
 
     g_extFrameCounter = 0;
     g_execHooksInstalled = false;
@@ -159,6 +183,21 @@ void libretroExtResetState()
 
     g_regionTagsValid = false;
     g_regionTags.clear();
+    g_staticRegionsValid = false;
+    g_staticRegions.clear();
+    g_staticRegionTags.clear();
+    g_shareInfosValid = false;
+    g_shareInfos.clear();
+    g_rollbackSupported = false;
+    g_rollbackFullSize = 0;
+    g_rollbackCompactSize = 0;
+    g_rollbackAvailabilityLogged = false;
+    g_rollbackDiagnosticsEnabled = false;
+    g_rollbackMetadataValid = false;
+    g_rollbackCompatibilityId = 0;
+    g_rollbackStateSize = 0;
+    g_rollbackPayloadSize = 0;
+    g_rollbackDeltaMaxSize = 0;
 
     g_dipFields.clear();
     g_dipLastMachine = nullptr;
@@ -347,6 +386,581 @@ static void build_region_cache(running_machine& mach)
     }
 
     g_regionTagsValid = true;
+}
+
+static void invalidate_static_region_cache()
+{
+    g_staticRegionsValid = false;
+    g_staticRegions.clear();
+    g_staticRegionTags.clear();
+}
+
+static void invalidate_share_cache()
+{
+    g_shareInfosValid = false;
+    g_shareInfos.clear();
+}
+
+static void libretro_ext_copy_string(char* dst, size_t dstSize, const char* src)
+{
+    if (!dst || !dstSize)
+        return;
+
+    dst[0] = '\0';
+    if (!src)
+        return;
+
+    std::snprintf(dst, dstSize, "%s", src);
+}
+
+static void libretro_ext_log_static_region(const libretro_ext_static_region_info& info, int index)
+{
+    if (!log_cb)
+        return;
+
+    log_cb(RETRO_LOG_INFO,
+            "libretro_ext: static region[%d] name='%s' tag='%s' size=%llu flags=0x%08x\n",
+            index,
+            info.name,
+            info.region_tag,
+            (unsigned long long)info.size,
+            info.flags);
+}
+
+static bool libretro_ext_share_is_immutable(const char* share_name)
+{
+    return share_name && (!std::strcmp(share_name, ":decrypted_gamerom") || !std::strcmp(share_name, "decrypted_gamerom"));
+}
+
+static void build_share_cache(running_machine& mach)
+{
+    if (g_shareInfosValid)
+        return;
+
+    if ((int)mach.phase() < (int)machine_phase::RESET)
+        return;
+
+    g_shareInfos.clear();
+
+    std::vector<std::string> names;
+    names.reserve(mach.memory().shares().size());
+    for (const auto& [name, share] : mach.memory().shares())
+    {
+        if (share && !name.empty())
+            names.push_back(name);
+    }
+
+    std::sort(names.begin(), names.end());
+    for (const std::string& name : names)
+    {
+        memory_share* share = mach.memory().share_find(name);
+        if (!share)
+            continue;
+
+        libretro_ext_share_info info{};
+        libretro_ext_copy_string(info.name, sizeof(info.name), name.c_str());
+        info.size = share->bytes();
+        info.flags = LIBRETRO_EXT_SHARE_EXPORTABLE | LIBRETRO_EXT_SHARE_IMPORTABLE;
+        if (libretro_ext_share_is_immutable(name.c_str()))
+        {
+            info.flags = LIBRETRO_EXT_SHARE_IMMUTABLE_AFTER_STARTUP | LIBRETRO_EXT_SHARE_SAFE_ROLLBACK_BASELINE;
+            if (log_cb)
+                log_cb(RETRO_LOG_INFO,
+                        "libretro_ext: immutable share name='%s' size=%llu flags=0x%08x\n",
+                        info.name,
+                        (unsigned long long)info.size,
+                        info.flags);
+        }
+
+        g_shareInfos.push_back(info);
+    }
+
+    g_shareInfosValid = true;
+}
+
+static void build_static_region_cache(running_machine& mach)
+{
+    if (g_staticRegionsValid)
+        return;
+
+    if ((int)mach.phase() < (int)machine_phase::RESET)
+        return;
+
+    g_staticRegions.clear();
+    g_staticRegionTags.clear();
+
+    if (auto* cps3 = dynamic_cast<cps3_state*>(&mach.root_device()))
+    {
+        const void* base = nullptr;
+        uint64_t size = 0;
+        if (cps3->getStaticGameDataRegion(base, size) && size)
+        {
+            libretro_ext_static_region_info info{};
+            libretro_ext_copy_string(info.name, sizeof(info.name), "CPS3 flash/NVRAM game-data bank");
+            libretro_ext_copy_string(info.region_tag, sizeof(info.region_tag), "user5");
+            info.offset = 0;
+            info.size = size;
+            info.flags = LIBRETRO_EXT_STATIC_REGION_IMMUTABLE_AFTER_STARTUP
+                       | LIBRETRO_EXT_STATIC_REGION_SAFE_ROLLBACK_BASELINE
+                       | LIBRETRO_EXT_STATIC_REGION_OPTIONAL_HASH_IDENTITY;
+            g_staticRegionTags.insert(info.region_tag);
+            g_staticRegions.push_back(info);
+        }
+    }
+
+    for (const auto& entry : mach.memory().regions())
+    {
+        if (!entry.second || !entry.second->base() || entry.first.empty())
+            continue;
+
+        const bool is_simm_region = entry.first.rfind("simm", 0) == 0;
+        const bool is_decrypted_game_rom = (entry.first == "decrypted_gamerom");
+        if (!is_simm_region && !is_decrypted_game_rom)
+            continue;
+
+        libretro_ext_static_region_info info{};
+        libretro_ext_copy_string(info.name, sizeof(info.name), is_simm_region ? "CPS3 SIMM flash/game ROM" : "CPS3 decrypted gamerom");
+        libretro_ext_copy_string(info.region_tag, sizeof(info.region_tag), entry.first.c_str());
+        info.offset = 0;
+        info.size = entry.second->bytes();
+        info.flags = LIBRETRO_EXT_STATIC_REGION_IMMUTABLE_AFTER_STARTUP
+                   | LIBRETRO_EXT_STATIC_REGION_SAFE_ROLLBACK_BASELINE
+                   | LIBRETRO_EXT_STATIC_REGION_OPTIONAL_HASH_IDENTITY;
+        g_staticRegionTags.insert(entry.first);
+        g_staticRegions.push_back(info);
+    }
+
+    g_staticRegionsValid = true;
+
+    if (log_cb)
+    {
+        for (size_t index = 0; index < g_staticRegions.size(); ++index)
+            libretro_ext_log_static_region(g_staticRegions[index], (int)index);
+    }
+}
+
+static int libretro_ext_get_static_region_count_impl()
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return 0;
+
+    build_static_region_cache(*mach);
+    return (int)g_staticRegions.size();
+}
+
+static bool libretro_ext_get_static_region_info_impl(int index, libretro_ext_static_region_info* out)
+{
+    if (!out)
+        return false;
+
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    build_static_region_cache(*mach);
+    if (index < 0 || index >= (int)g_staticRegions.size())
+        return false;
+
+    *out = g_staticRegions[index];
+    return true;
+}
+
+static int libretro_ext_get_share_count_impl()
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return 0;
+
+    build_share_cache(*mach);
+    return (int)g_shareInfos.size();
+}
+
+static const char* libretro_ext_get_share_tag_impl(int index)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return nullptr;
+
+    build_share_cache(*mach);
+    if (index < 0 || index >= (int)g_shareInfos.size())
+        return nullptr;
+
+    return g_shareInfos[index].name;
+}
+
+static uint64_t libretro_ext_get_share_size_impl(const char* share_tag)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !share_tag)
+        return 0;
+
+    build_share_cache(*mach);
+    for (const auto& info : g_shareInfos)
+    {
+        if (!std::strcmp(info.name, share_tag))
+            return info.size;
+    }
+    return 0;
+}
+
+static uint32_t libretro_ext_get_share_flags_impl(const char* share_tag)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !share_tag)
+        return 0;
+
+    build_share_cache(*mach);
+    for (const auto& info : g_shareInfos)
+    {
+        if (!std::strcmp(info.name, share_tag))
+            return info.flags;
+    }
+    return 0;
+}
+
+static bool libretro_ext_get_share_info_impl(int index, libretro_ext_share_info* out)
+{
+    if (!out)
+        return false;
+
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    build_share_cache(*mach);
+    if (index < 0 || index >= (int)g_shareInfos.size())
+        return false;
+
+    *out = g_shareInfos[index];
+    return true;
+}
+
+static uint64_t libretro_ext_read_share_impl(const char* share_tag, uint64_t offset, void* dst, uint64_t bytes)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !share_tag || !dst)
+        return 0;
+
+    build_share_cache(*mach);
+    memory_share* share = mach->memory().share_find(share_tag);
+    if (!share || !share->ptr())
+        return 0;
+
+    if (offset >= share->bytes())
+        return 0;
+
+    bytes = std::min<uint64_t>(bytes, share->bytes() - offset);
+    std::memcpy(dst, static_cast<u8*>(share->ptr()) + offset, (size_t)bytes);
+    return bytes;
+}
+
+static uint64_t libretro_ext_write_share_impl(const char* share_tag, uint64_t offset, const void* src, uint64_t bytes)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !share_tag || !src)
+        return 0;
+
+    if (libretro_ext_share_is_immutable(share_tag))
+        return 0;
+
+    build_share_cache(*mach);
+    memory_share* share = mach->memory().share_find(share_tag);
+    if (!share || !share->ptr())
+        return 0;
+
+    if (offset >= share->bytes())
+        return 0;
+
+    bytes = std::min<uint64_t>(bytes, share->bytes() - offset);
+    std::memcpy(static_cast<u8*>(share->ptr()) + offset, src, (size_t)bytes);
+    return bytes;
+}
+
+static bool libretro_ext_rollback_item_filter(const char* name, device_t* device, const char* module, const char* tag, int index, const void* data, u32 valsize, u32 valcount, u32 blockcount, u32 stride)
+{
+    (void)module;
+    (void)index;
+    (void)data;
+    (void)valsize;
+    (void)valcount;
+    (void)blockcount;
+    (void)stride;
+
+    const char* normalized_tag = (tag && tag[0] == ':') ? (tag + 1) : (tag ? tag : "");
+	const bool is_decrypted_game_rom = name && (!std::strcmp(name, "m_decrypted_gamerom") || !std::strcmp(name, "decrypted_gamerom"));
+	// Keep decrypted_gamerom in the compact rollback snapshot so decrypted contents round-trip.
+	const bool is_static_region = !is_decrypted_game_rom && (normalized_tag[0] != '\0') && (g_staticRegionTags.find(normalized_tag) != g_staticRegionTags.end());
+    const bool is_simm_flash_data = is_static_region && device && dynamic_cast<intelfsh_device*>(device) && name && !std::strcmp(name, "m_data");
+
+    return !is_simm_flash_data;
+}
+
+static uint64_t libretro_ext_rollback_hash64_update(uint64_t hash, const void* data, size_t size)
+{
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; ++i)
+    {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static uint64_t libretro_ext_rollback_hash64_u32(uint64_t hash, uint32_t value)
+{
+    const uint8_t bytes[4] = {
+        static_cast<uint8_t>(value & 0xffU),
+        static_cast<uint8_t>((value >> 8) & 0xffU),
+        static_cast<uint8_t>((value >> 16) & 0xffU),
+        static_cast<uint8_t>((value >> 24) & 0xffU)
+    };
+    return libretro_ext_rollback_hash64_update(hash, bytes, sizeof(bytes));
+}
+
+static uint64_t libretro_ext_rollback_hash64_u64(uint64_t hash, uint64_t value)
+{
+    const uint8_t bytes[8] = {
+        static_cast<uint8_t>(value & 0xffU),
+        static_cast<uint8_t>((value >> 8) & 0xffU),
+        static_cast<uint8_t>((value >> 16) & 0xffU),
+        static_cast<uint8_t>((value >> 24) & 0xffU),
+        static_cast<uint8_t>((value >> 32) & 0xffU),
+        static_cast<uint8_t>((value >> 40) & 0xffU),
+        static_cast<uint8_t>((value >> 48) & 0xffU),
+        static_cast<uint8_t>((value >> 56) & 0xffU)
+    };
+    return libretro_ext_rollback_hash64_update(hash, bytes, sizeof(bytes));
+}
+
+static uint64_t libretro_ext_rollback_hash64_cstr(uint64_t hash, const char* text)
+{
+    if (!text)
+        return libretro_ext_rollback_hash64_u32(hash, 0xffffffffU);
+    return libretro_ext_rollback_hash64_update(hash, text, std::strlen(text) + 1);
+}
+
+static uint64_t libretro_ext_rollback_hash64_machine_metadata(running_machine& mach, uint64_t payload_size, uint64_t state_size)
+{
+    uint64_t hash = 1469598103934665603ULL;
+
+    hash = libretro_ext_rollback_hash64_u32(hash, kRollbackStateFormatVersion);
+    hash = libretro_ext_rollback_hash64_u32(hash, kRollbackDeltaFormatVersion);
+    hash = libretro_ext_rollback_hash64_u32(hash, LIBRETRO_EXT_SHARE_SAFE_ROLLBACK_BASELINE);
+    hash = libretro_ext_rollback_hash64_u32(hash, LIBRETRO_EXT_STATIC_REGION_SAFE_ROLLBACK_BASELINE);
+    hash = libretro_ext_rollback_hash64_u32(hash, 5U);
+    hash = libretro_ext_rollback_hash64_u32(hash, (uint32_t)sizeof(libretro_ext_api));
+    hash = libretro_ext_rollback_hash64_u64(hash, payload_size);
+    hash = libretro_ext_rollback_hash64_u64(hash, state_size);
+    hash = libretro_ext_rollback_hash64_u32(hash, kRollbackPreferredBlockSize);
+
+    hash = libretro_ext_rollback_hash64_cstr(hash, mach.system().name);
+    hash = libretro_ext_rollback_hash64_cstr(hash, mach.system().parent);
+    hash = libretro_ext_rollback_hash64_cstr(hash, mach.system().year);
+    hash = libretro_ext_rollback_hash64_cstr(hash, mach.system().manufacturer);
+    hash = libretro_ext_rollback_hash64_u32(hash, mach.system().flags);
+
+    hash = libretro_ext_rollback_hash64_u32(hash, (uint32_t)g_staticRegions.size());
+    for (const auto& region : g_staticRegions)
+    {
+        hash = libretro_ext_rollback_hash64_cstr(hash, region.name);
+        hash = libretro_ext_rollback_hash64_cstr(hash, region.region_tag);
+        hash = libretro_ext_rollback_hash64_cstr(hash, region.cpu_tag);
+        hash = libretro_ext_rollback_hash64_cstr(hash, region.space);
+        hash = libretro_ext_rollback_hash64_u64(hash, region.offset);
+        hash = libretro_ext_rollback_hash64_u64(hash, region.size);
+        hash = libretro_ext_rollback_hash64_u32(hash, region.flags);
+    }
+
+    hash = libretro_ext_rollback_hash64_u32(hash, (uint32_t)g_shareInfos.size());
+    for (const auto& share : g_shareInfos)
+    {
+        hash = libretro_ext_rollback_hash64_cstr(hash, share.name);
+        hash = libretro_ext_rollback_hash64_u64(hash, share.size);
+        hash = libretro_ext_rollback_hash64_u32(hash, share.flags);
+    }
+
+    return hash;
+}
+
+static uint64_t libretro_ext_rollback_compute_delta_max_size(uint64_t payload_size)
+{
+    if (payload_size == 0)
+        return sizeof(retro_ext_rollback_delta_header);
+
+    const uint64_t block_size = kRollbackPreferredBlockSize;
+    const uint64_t block_count = (payload_size + block_size - 1U) / block_size;
+    const uint64_t block_bytes = block_count * (sizeof(retro_ext_rollback_delta_block) + block_size);
+    return sizeof(retro_ext_rollback_delta_header) + block_bytes;
+}
+
+static bool libretro_ext_rollback_refresh_metadata_impl(running_machine& mach)
+{
+    if (!mach.save().supported())
+    {
+        g_rollbackSupported = false;
+        g_rollbackFullSize = 0;
+        g_rollbackCompactSize = 0;
+        g_rollbackMetadataValid = true;
+        g_rollbackCompatibilityId = 0;
+        g_rollbackStateSize = 0;
+        g_rollbackPayloadSize = 0;
+        g_rollbackDeltaMaxSize = 0;
+        return false;
+    }
+
+    build_static_region_cache(mach);
+    build_share_cache(mach);
+
+    const save_item_filter_delegate filter([](const char* name, device_t* device, const char* module, const char* tag, int index, const void* data, u32 valsize, u32 valcount, u32 blockcount, u32 stride) {
+        return libretro_ext_rollback_item_filter(name, device, module, tag, index, data, valsize, valcount, blockcount, stride);
+    });
+
+    const uint64_t full_size = (uint64_t)ram_state::get_size(mach.save());
+    const uint64_t compact_size = (uint64_t)ram_state::get_size(mach.save(), filter);
+
+    g_rollbackFullSize = full_size;
+    g_rollbackCompactSize = compact_size;
+    g_rollbackSupported = (compact_size > 0) && (compact_size < full_size);
+    g_rollbackPayloadSize = g_rollbackSupported ? compact_size : 0;
+    g_rollbackStateSize = g_rollbackSupported ? (compact_size + sizeof(retro_ext_rollback_state_header)) : 0;
+    g_rollbackCompatibilityId = g_rollbackSupported ? libretro_ext_rollback_hash64_machine_metadata(mach, compact_size, g_rollbackStateSize) : 0;
+    g_rollbackDeltaMaxSize = g_rollbackSupported ? libretro_ext_rollback_compute_delta_max_size(g_rollbackPayloadSize) : 0;
+    g_rollbackMetadataValid = true;
+
+    return g_rollbackSupported;
+}
+
+static bool libretro_ext_rollback_is_supported_impl(running_machine& mach)
+{
+    if (!mach.save().supported())
+        return false;
+
+    build_static_region_cache(mach);
+    build_share_cache(mach);
+
+    const save_item_filter_delegate filter([](const char* name, device_t* device, const char* module, const char* tag, int index, const void* data, u32 valsize, u32 valcount, u32 blockcount, u32 stride) {
+        return libretro_ext_rollback_item_filter(name, device, module, tag, index, data, valsize, valcount, blockcount, stride);
+    });
+
+    const uint64_t full_size = (uint64_t)ram_state::get_size(mach.save());
+    const uint64_t compact_size = (uint64_t)ram_state::get_size(mach.save(), filter);
+
+    g_rollbackFullSize = full_size;
+    g_rollbackCompactSize = compact_size;
+    g_rollbackSupported = (compact_size > 0) && (compact_size < full_size);
+
+    if (g_rollbackSupported && !g_rollbackAvailabilityLogged && log_cb)
+    {
+        log_cb(RETRO_LOG_INFO,
+                "libretro_ext: compact rollback available for %s full=%llu compact=%llu saved=%llu\n",
+                mach.system().name,
+                (unsigned long long)full_size,
+                (unsigned long long)compact_size,
+                (unsigned long long)(full_size - compact_size));
+        g_rollbackAvailabilityLogged = true;
+    }
+    else if (!g_rollbackSupported && !g_rollbackAvailabilityLogged && log_cb)
+    {
+        log_cb(RETRO_LOG_WARN,
+                "libretro_ext: compact rollback unavailable for %s full=%llu compact=%llu\n",
+                mach.system().name,
+                (unsigned long long)full_size,
+                (unsigned long long)compact_size);
+        g_rollbackAvailabilityLogged = true;
+    }
+
+    return g_rollbackSupported;
+}
+
+static uint64_t libretro_ext_get_rollback_serialize_size_impl()
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return 0;
+
+    return libretro_ext_rollback_is_supported_impl(*mach) ? g_rollbackCompactSize : 0;
+}
+
+static bool libretro_ext_rollback_serialize_impl(void* data, uint64_t size)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !data)
+        return false;
+
+    if (!libretro_ext_rollback_is_supported_impl(*mach) || size != g_rollbackCompactSize)
+        return false;
+
+    const save_item_filter_delegate filter([](const char* name, device_t* device, const char* module, const char* tag, int index, const void* data, u32 valsize, u32 valcount, u32 blockcount, u32 stride) {
+        return libretro_ext_rollback_item_filter(name, device, module, tag, index, data, valsize, valcount, blockcount, stride);
+    });
+
+    return mach->save().write_buffer(data, (size_t)size, filter) == STATERR_NONE;
+}
+
+static bool libretro_ext_rollback_unserialize_impl(const void* data, uint64_t size)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !data)
+        return false;
+
+    if (!libretro_ext_rollback_is_supported_impl(*mach) || size != g_rollbackCompactSize)
+        return false;
+
+    const save_item_filter_delegate filter([](const char* name, device_t* device, const char* module, const char* tag, int index, const void* data, u32 valsize, u32 valcount, u32 blockcount, u32 stride) {
+        return libretro_ext_rollback_item_filter(name, device, module, tag, index, data, valsize, valcount, blockcount, stride);
+    });
+
+    return mach->save().read_buffer(data, (size_t)size, filter) == STATERR_NONE;
+}
+
+static bool libretro_ext_rollback_self_test_impl()
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    const uint64_t size = libretro_ext_get_rollback_serialize_size_impl();
+    if (!size)
+        return false;
+
+    std::vector<uint8_t> compact_snapshot((size_t)size);
+    std::vector<uint8_t> compact_roundtrip((size_t)size);
+    std::vector<uint8_t> full_snapshot((size_t)g_rollbackFullSize);
+
+    const save_item_filter_delegate filter([](const char* name, device_t* device, const char* module, const char* tag, int index, const void* data, u32 valsize, u32 valcount, u32 blockcount, u32 stride) {
+        return libretro_ext_rollback_item_filter(name, device, module, tag, index, data, valsize, valcount, blockcount, stride);
+    });
+
+    if (mach->save().write_buffer(full_snapshot.data(), full_snapshot.size()) != STATERR_NONE)
+        return false;
+    if (mach->save().write_buffer(compact_snapshot.data(), compact_snapshot.size(), filter) != STATERR_NONE)
+        return false;
+    if (mach->save().read_buffer(compact_snapshot.data(), compact_snapshot.size(), filter) != STATERR_NONE)
+    {
+        mach->save().read_buffer(full_snapshot.data(), full_snapshot.size());
+        return false;
+    }
+    if (mach->save().write_buffer(compact_roundtrip.data(), compact_roundtrip.size(), filter) != STATERR_NONE)
+    {
+        mach->save().read_buffer(full_snapshot.data(), full_snapshot.size());
+        return false;
+    }
+
+    const bool match = (compact_snapshot == compact_roundtrip);
+    if (mach->save().read_buffer(full_snapshot.data(), full_snapshot.size()) != STATERR_NONE)
+        return false;
+    if (log_cb)
+    {
+        log_cb(match ? RETRO_LOG_INFO : RETRO_LOG_WARN,
+                "libretro_ext: rollback self-test %s for %s compact=%llu full=%llu\n",
+                match ? "passed" : "failed",
+                mach->system().name,
+                (unsigned long long)g_rollbackCompactSize,
+                (unsigned long long)g_rollbackFullSize);
+    }
+
+    return match;
 }
 
 static running_machine* libretro_ext_machine()
@@ -968,7 +1582,7 @@ static inline void check_exec_triggers(const char* cpuTag, uint64_t pc)
 static void ext_clear_exec_triggers_impl()
 {
     g_execTriggers.clear();
-    std::memset(&g_lastExecHit, 0, sizeof(g_lastExecHit));
+    g_lastExecHit = {};
 }
 
 static void libretro_ext_add_exec_trigger_impl(const char* cpuTag, uint64_t pcStart, uint64_t pcEnd,
@@ -1004,7 +1618,7 @@ static bool libretro_ext_get_last_exec_hit_impl(libretro_ext_exec_hit* outHit)
 
 static void libretro_ext_clear_last_exec_hit_impl()
 {
-    std::memset(&g_lastExecHit, 0, sizeof(g_lastExecHit));
+    g_lastExecHit = {};
 }
 
 static void libretro_ext_check_exec_triggers(device_t& dev, uint64_t pc)
@@ -1505,7 +2119,7 @@ static bool libretro_ext_get_last_watch_hit_impl(libretro_ext_watch_hit* outHit)
 
 static void libretro_ext_clear_last_watch_hit_impl()
 {
-    std::memset(&g_extLastWatchHit, 0, sizeof(g_extLastWatchHit));
+    g_extLastWatchHit = {};
 }
 
 // ---------------------------------------------------------------------------
@@ -1657,7 +2271,501 @@ static const libretro_ext_api g_ext_api = {
     libretro_ext_add_inject_rule_impl,
     libretro_ext_clear_inject_rules_impl,
 
-    libretro_ext_add_inject_rule_ex_impl
+    libretro_ext_add_inject_rule_ex_impl,
+    libretro_ext_get_static_region_count_impl,
+    libretro_ext_get_static_region_info_impl,
+    libretro_ext_get_share_count_impl,
+    libretro_ext_get_share_tag_impl,
+    libretro_ext_get_share_size_impl,
+    libretro_ext_get_share_flags_impl,
+    libretro_ext_get_share_info_impl,
+    libretro_ext_read_share_impl,
+    libretro_ext_write_share_impl,
+    libretro_ext_get_rollback_serialize_size_impl,
+    libretro_ext_rollback_serialize_impl,
+    libretro_ext_rollback_unserialize_impl,
+    libretro_ext_rollback_self_test_impl
+};
+
+static bool libretro_ext_rollback_get_info_impl(retro_ext_rollback_info* info)
+{
+    if (!info)
+        return false;
+
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    if (!libretro_ext_rollback_refresh_metadata_impl(*mach))
+        return false;
+
+    info->interface_version = 1;
+    info->flags = RETRO_EXT_ROLLBACK_FIXED_SIZE
+        | RETRO_EXT_ROLLBACK_DETERMINISTIC_LAYOUT
+        | RETRO_EXT_ROLLBACK_CORE_DELTA_SUPPORTED
+        | RETRO_EXT_ROLLBACK_XOR_DELTA
+        | RETRO_EXT_ROLLBACK_IN_PLACE_DELTA_APPLY
+        | RETRO_EXT_ROLLBACK_EXCLUDES_STATIC_DATA;
+    info->state_format_version = kRollbackStateFormatVersion;
+    info->delta_format_version = kRollbackDeltaFormatVersion;
+    info->compatibility_id = g_rollbackCompatibilityId;
+    info->state_size = g_rollbackStateSize;
+    info->preferred_block_size = kRollbackPreferredBlockSize;
+    info->maximum_delta_size = (g_rollbackDeltaMaxSize > 0xffffffffULL) ? 0xffffffffU : (uint32_t)g_rollbackDeltaMaxSize;
+    return true;
+}
+
+static uint64_t libretro_ext_rollback_get_state_size_impl()
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return 0;
+
+    if (!libretro_ext_rollback_refresh_metadata_impl(*mach))
+        return 0;
+
+    return g_rollbackStateSize;
+}
+
+static uint64_t libretro_ext_rollback_get_delta_max_size_impl()
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return 0;
+
+    if (!libretro_ext_rollback_refresh_metadata_impl(*mach))
+        return 0;
+
+    return g_rollbackDeltaMaxSize;
+}
+
+static void libretro_ext_rollback_set_diagnostics_enabled_impl(bool enabled)
+{
+    g_rollbackDiagnosticsEnabled = enabled;
+}
+
+static bool libretro_ext_rollback_get_diagnostics_enabled_impl()
+{
+    return g_rollbackDiagnosticsEnabled;
+}
+
+static void libretro_ext_rollback_log_metrics(const char* op, uint64_t state_size, uint64_t payload_size, uint64_t extra_count, uint64_t elapsed_us)
+{
+    if (!g_rollbackDiagnosticsEnabled || !log_cb)
+        return;
+
+    log_cb(RETRO_LOG_INFO,
+           "libretro_ext: rollback %s state=%llu payload=%llu extra=%llu time_us=%llu\n",
+           op ? op : "op",
+           (unsigned long long)state_size,
+           (unsigned long long)payload_size,
+           (unsigned long long)extra_count,
+           (unsigned long long)elapsed_us);
+}
+
+static bool libretro_ext_rollback_serialize_blob_impl(void* destination, uint64_t destination_size, uint64_t frame_number)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !destination)
+        return false;
+
+    if (!libretro_ext_rollback_refresh_metadata_impl(*mach))
+        return false;
+
+    if (destination_size < g_rollbackStateSize || g_rollbackStateSize > SIZE_MAX || g_rollbackPayloadSize > SIZE_MAX)
+        return false;
+
+    const auto t0 = g_rollbackDiagnosticsEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+
+    const save_item_filter_delegate filter([](const char* name, device_t* device, const char* module, const char* tag, int index, const void* data, u32 valsize, u32 valcount, u32 blockcount, u32 stride) {
+        return libretro_ext_rollback_item_filter(name, device, module, tag, index, data, valsize, valcount, blockcount, stride);
+    });
+
+    uint8_t* out = static_cast<uint8_t*>(destination);
+    if (mach->save().write_buffer(out + sizeof(retro_ext_rollback_state_header), (size_t)g_rollbackPayloadSize, filter) != STATERR_NONE)
+        return false;
+
+    retro_ext_rollback_state_header header{};
+    header.magic = kRollbackStateMagic;
+    header.format_version = kRollbackStateFormatVersion;
+    header.header_size = (uint16_t)sizeof(retro_ext_rollback_state_header);
+    header.compatibility_id = g_rollbackCompatibilityId;
+    header.frame_number = frame_number;
+    header.payload_size = (uint32_t)g_rollbackPayloadSize;
+    header.payload_crc32 = (uint32_t)util::crc32_creator::simple(out + sizeof(retro_ext_rollback_state_header), (size_t)g_rollbackPayloadSize);
+    header.flags = RETRO_EXT_ROLLBACK_FIXED_SIZE
+        | RETRO_EXT_ROLLBACK_DETERMINISTIC_LAYOUT
+        | RETRO_EXT_ROLLBACK_EXCLUDES_STATIC_DATA;
+    header.reserved = 0;
+    std::memcpy(out, &header, sizeof(header));
+
+    if (g_rollbackDiagnosticsEnabled)
+    {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+        libretro_ext_rollback_log_metrics("serialize", g_rollbackStateSize, g_rollbackPayloadSize, 0, (uint64_t)elapsed);
+    }
+
+    return true;
+}
+
+static bool libretro_ext_rollback_parse_state_blob(const void* source, uint64_t source_size, retro_ext_rollback_state_header* header_out, const uint8_t** payload_out)
+{
+    if (!source || source_size < sizeof(retro_ext_rollback_state_header) || !header_out || !payload_out)
+        return false;
+
+    std::memcpy(header_out, source, sizeof(*header_out));
+    if (header_out->magic != kRollbackStateMagic || header_out->format_version != kRollbackStateFormatVersion || header_out->header_size != sizeof(retro_ext_rollback_state_header))
+        return false;
+    if (header_out->reserved != 0)
+        return false;
+
+    const uint64_t total_size = (uint64_t)header_out->header_size + (uint64_t)header_out->payload_size;
+    if (total_size != source_size || header_out->payload_size != g_rollbackPayloadSize || total_size != g_rollbackStateSize)
+        return false;
+    if (header_out->compatibility_id != g_rollbackCompatibilityId)
+        return false;
+    if (header_out->flags != (RETRO_EXT_ROLLBACK_FIXED_SIZE | RETRO_EXT_ROLLBACK_DETERMINISTIC_LAYOUT | RETRO_EXT_ROLLBACK_EXCLUDES_STATIC_DATA))
+        return false;
+
+    const uint8_t* payload = static_cast<const uint8_t*>(source) + header_out->header_size;
+    if ((uint32_t)util::crc32_creator::simple(payload, (size_t)header_out->payload_size) != header_out->payload_crc32)
+        return false;
+
+    *payload_out = payload;
+    return true;
+}
+
+static bool libretro_ext_rollback_unserialize_blob_impl(const void* source, uint64_t source_size)
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach || !source)
+        return false;
+
+    if (!libretro_ext_rollback_refresh_metadata_impl(*mach))
+        return false;
+
+    const auto t0 = g_rollbackDiagnosticsEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    retro_ext_rollback_state_header header{};
+    const uint8_t* payload = nullptr;
+    if (!libretro_ext_rollback_parse_state_blob(source, source_size, &header, &payload))
+        return false;
+
+    const save_item_filter_delegate filter([](const char* name, device_t* device, const char* module, const char* tag, int index, const void* data, u32 valsize, u32 valcount, u32 blockcount, u32 stride) {
+        return libretro_ext_rollback_item_filter(name, device, module, tag, index, data, valsize, valcount, blockcount, stride);
+    });
+
+    if (mach->save().read_buffer(payload, (size_t)header.payload_size, filter) != STATERR_NONE)
+        return false;
+
+    g_extPcHistory.clear();
+    g_extLastWatchHit = {};
+    g_lastExecHit = {};
+
+    if (g_rollbackDiagnosticsEnabled)
+    {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+        libretro_ext_rollback_log_metrics("unserialize", g_rollbackStateSize, g_rollbackPayloadSize, 0, (uint64_t)elapsed);
+    }
+
+    return true;
+}
+
+static bool libretro_ext_rollback_parse_delta_blob(const void* delta, uint64_t delta_size, retro_ext_rollback_delta_header* header_out, const uint8_t** body_out, uint32_t* changed_block_count_out)
+{
+    if (!delta || delta_size < sizeof(retro_ext_rollback_delta_header) || !header_out || !body_out || !changed_block_count_out)
+        return false;
+
+    std::memcpy(header_out, delta, sizeof(*header_out));
+    if (header_out->magic != kRollbackDeltaMagic || header_out->format_version != kRollbackDeltaFormatVersion || header_out->header_size != sizeof(retro_ext_rollback_delta_header))
+        return false;
+    if (header_out->reserved != 0 || header_out->block_size != kRollbackPreferredBlockSize)
+        return false;
+    if (header_out->state_size != g_rollbackStateSize || header_out->compatibility_id != g_rollbackCompatibilityId)
+        return false;
+    if (header_out->flags != (RETRO_EXT_ROLLBACK_CORE_DELTA_SUPPORTED | RETRO_EXT_ROLLBACK_XOR_DELTA | RETRO_EXT_ROLLBACK_IN_PLACE_DELTA_APPLY))
+        return false;
+    if (header_out->encoded_size != delta_size || header_out->encoded_size < header_out->header_size)
+        return false;
+
+    const uint8_t* body = static_cast<const uint8_t*>(delta) + header_out->header_size;
+    const uint32_t body_size = header_out->encoded_size - header_out->header_size;
+    if ((uint32_t)util::crc32_creator::simple(body, body_size) != header_out->payload_crc32)
+        return false;
+
+    *body_out = body;
+    *changed_block_count_out = header_out->changed_block_count;
+    return true;
+}
+
+static bool libretro_ext_rollback_create_delta_impl(const void* from_state, uint64_t from_state_size, uint64_t from_frame, const void* to_state, uint64_t to_state_size, uint64_t to_frame, void* delta_destination, uint64_t delta_capacity, uint64_t* delta_size)
+{
+    if (!from_state || !to_state || !delta_destination || !delta_size)
+        return false;
+
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    if (!libretro_ext_rollback_refresh_metadata_impl(*mach))
+        return false;
+
+    retro_ext_rollback_state_header from_header{};
+    retro_ext_rollback_state_header to_header{};
+    const uint8_t* from_payload = nullptr;
+    const uint8_t* to_payload = nullptr;
+    if (!libretro_ext_rollback_parse_state_blob(from_state, from_state_size, &from_header, &from_payload))
+        return false;
+    if (!libretro_ext_rollback_parse_state_blob(to_state, to_state_size, &to_header, &to_payload))
+        return false;
+    if (from_header.frame_number != from_frame || to_header.frame_number != to_frame)
+        return false;
+
+    const uint64_t payload_size = g_rollbackPayloadSize;
+    const uint32_t block_size = kRollbackPreferredBlockSize;
+    const uint64_t block_count = (payload_size + block_size - 1U) / block_size;
+
+    uint32_t changed_block_count = 0;
+    uint64_t encoded_size = sizeof(retro_ext_rollback_delta_header);
+    for (uint64_t block_index = 0; block_index < block_count; ++block_index)
+    {
+        const uint64_t offset = block_index * block_size;
+        const uint32_t data_size = (uint32_t)std::min<uint64_t>(block_size, payload_size - offset);
+        bool changed = false;
+        for (uint32_t i = 0; i < data_size; ++i)
+        {
+            if ((from_payload[offset + i] ^ to_payload[offset + i]) != 0)
+            {
+                changed = true;
+                break;
+            }
+        }
+        if (changed)
+        {
+            ++changed_block_count;
+            encoded_size += sizeof(retro_ext_rollback_delta_block) + data_size;
+        }
+    }
+
+    if (encoded_size > delta_capacity || encoded_size > SIZE_MAX)
+        return false;
+
+    const auto t0 = g_rollbackDiagnosticsEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    uint8_t* out = static_cast<uint8_t*>(delta_destination);
+    uint8_t* cursor = out + sizeof(retro_ext_rollback_delta_header);
+    for (uint64_t block_index = 0; block_index < block_count; ++block_index)
+    {
+        const uint64_t offset = block_index * block_size;
+        const uint32_t data_size = (uint32_t)std::min<uint64_t>(block_size, payload_size - offset);
+        bool changed = false;
+        for (uint32_t i = 0; i < data_size; ++i)
+        {
+            if ((from_payload[offset + i] ^ to_payload[offset + i]) != 0)
+            {
+                changed = true;
+                break;
+            }
+        }
+        if (!changed)
+            continue;
+
+        retro_ext_rollback_delta_block block{};
+        block.block_index = (uint32_t)block_index;
+        block.data_size = (uint16_t)data_size;
+        block.reserved = 0;
+        std::memcpy(cursor, &block, sizeof(block));
+        cursor += sizeof(block);
+        for (uint32_t i = 0; i < data_size; ++i)
+            cursor[i] = from_payload[offset + i] ^ to_payload[offset + i];
+        cursor += data_size;
+    }
+
+    retro_ext_rollback_delta_header header{};
+    header.magic = kRollbackDeltaMagic;
+    header.format_version = kRollbackDeltaFormatVersion;
+    header.header_size = (uint16_t)sizeof(retro_ext_rollback_delta_header);
+    header.compatibility_id = g_rollbackCompatibilityId;
+    header.from_frame = from_frame;
+    header.to_frame = to_frame;
+    header.state_size = (uint32_t)g_rollbackStateSize;
+    header.block_size = block_size;
+    header.changed_block_count = changed_block_count;
+    header.encoded_size = (uint32_t)encoded_size;
+    header.payload_crc32 = (uint32_t)util::crc32_creator::simple(out + sizeof(retro_ext_rollback_delta_header), (size_t)(encoded_size - sizeof(retro_ext_rollback_delta_header)));
+    header.flags = RETRO_EXT_ROLLBACK_CORE_DELTA_SUPPORTED | RETRO_EXT_ROLLBACK_XOR_DELTA | RETRO_EXT_ROLLBACK_IN_PLACE_DELTA_APPLY;
+    header.reserved = 0;
+    std::memcpy(out, &header, sizeof(header));
+    *delta_size = encoded_size;
+
+    if (g_rollbackDiagnosticsEnabled)
+    {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+        const uint64_t pct_changed = payload_size ? ((uint64_t)changed_block_count * 100ULL) / block_count : 0;
+        libretro_ext_rollback_log_metrics("create-delta", g_rollbackStateSize, encoded_size, (uint64_t)changed_block_count, (uint64_t)elapsed);
+        if (log_cb)
+            log_cb(RETRO_LOG_INFO, "libretro_ext: rollback delta pct_changed=%llu\n", (unsigned long long)pct_changed);
+    }
+
+    return true;
+}
+
+static bool libretro_ext_rollback_apply_delta_impl(void* state_in_out, uint64_t state_size, const void* delta, uint64_t delta_size, uint64_t expected_from_frame, uint64_t* resulting_frame)
+{
+    if (!state_in_out || !delta)
+        return false;
+
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    if (!libretro_ext_rollback_refresh_metadata_impl(*mach))
+        return false;
+
+    if (state_size != g_rollbackStateSize)
+        return false;
+
+    retro_ext_rollback_state_header state_header{};
+    const uint8_t* state_payload = nullptr;
+    if (!libretro_ext_rollback_parse_state_blob(state_in_out, state_size, &state_header, &state_payload))
+        return false;
+
+    if (expected_from_frame != 0 && state_header.frame_number != expected_from_frame)
+        return false;
+
+    retro_ext_rollback_delta_header delta_header{};
+    const uint8_t* delta_body = nullptr;
+    uint32_t changed_block_count = 0;
+    if (!libretro_ext_rollback_parse_delta_blob(delta, delta_size, &delta_header, &delta_body, &changed_block_count))
+        return false;
+
+    const bool matches_from = (state_header.frame_number == delta_header.from_frame);
+    const bool matches_to = (state_header.frame_number == delta_header.to_frame);
+    if (!matches_from && !matches_to)
+        return false;
+
+    const uint64_t block_size = delta_header.block_size;
+    const uint64_t block_count = (g_rollbackPayloadSize + block_size - 1U) / block_size;
+    const uint8_t* cursor = delta_body;
+    const uint8_t* delta_end = static_cast<const uint8_t*>(delta) + delta_header.encoded_size;
+    uint32_t prev_block_index = 0;
+    bool have_prev = false;
+
+    for (uint32_t i = 0; i < changed_block_count; ++i)
+    {
+        if ((uint64_t)(delta_end - cursor) < sizeof(retro_ext_rollback_delta_block))
+            return false;
+
+        retro_ext_rollback_delta_block block{};
+        std::memcpy(&block, cursor, sizeof(block));
+        cursor += sizeof(block);
+
+        if (block.reserved != 0 || block.data_size == 0 || block.data_size > block_size)
+            return false;
+        if (block.block_index >= block_count)
+            return false;
+        if (have_prev && block.block_index <= prev_block_index)
+            return false;
+        have_prev = true;
+        prev_block_index = block.block_index;
+
+        const uint64_t offset = (uint64_t)block.block_index * block_size;
+        if (offset + block.data_size > g_rollbackPayloadSize)
+            return false;
+        if ((uint64_t)(delta_end - cursor) < block.data_size)
+            return false;
+
+        cursor += block.data_size;
+    }
+
+    if (cursor != delta_end)
+        return false;
+    if ((uint32_t)util::crc32_creator::simple(delta_body, (size_t)(delta_header.encoded_size - delta_header.header_size)) != delta_header.payload_crc32)
+        return false;
+
+    uint8_t* payload = static_cast<uint8_t*>(state_in_out) + sizeof(retro_ext_rollback_state_header);
+    cursor = delta_body;
+    have_prev = false;
+    for (uint32_t i = 0; i < changed_block_count; ++i)
+    {
+        retro_ext_rollback_delta_block block{};
+        std::memcpy(&block, cursor, sizeof(block));
+        cursor += sizeof(block);
+        uint8_t* dst = payload + (uint64_t)block.block_index * block_size;
+        for (uint32_t j = 0; j < block.data_size; ++j)
+            dst[j] ^= cursor[j];
+        cursor += block.data_size;
+    }
+
+    state_header.frame_number = matches_from ? delta_header.to_frame : delta_header.from_frame;
+    state_header.payload_crc32 = (uint32_t)util::crc32_creator::simple(payload, (size_t)state_header.payload_size);
+    std::memcpy(state_in_out, &state_header, sizeof(state_header));
+
+    g_extPcHistory.clear();
+    g_extLastWatchHit = {};
+    g_lastExecHit = {};
+
+    if (resulting_frame)
+        *resulting_frame = state_header.frame_number;
+
+    if (g_rollbackDiagnosticsEnabled && log_cb)
+        log_cb(RETRO_LOG_INFO, "libretro_ext: rollback apply-delta blocks=%u\n", changed_block_count);
+
+    return true;
+}
+
+static bool libretro_ext_rollback_self_test_new_impl()
+{
+    running_machine* mach = libretro_ext_machine();
+    if (!mach)
+        return false;
+
+    if (!libretro_ext_rollback_refresh_metadata_impl(*mach))
+        return false;
+
+    const uint64_t state_size = g_rollbackStateSize;
+    if (!state_size)
+        return false;
+
+    std::vector<uint8_t> state_a((size_t)state_size);
+    std::vector<uint8_t> state_b((size_t)state_size);
+    std::vector<uint8_t> delta((size_t)g_rollbackDeltaMaxSize);
+
+    if (!libretro_ext_rollback_serialize_blob_impl(state_a.data(), state_a.size(), 10))
+        return false;
+    if (!libretro_ext_rollback_unserialize_blob_impl(state_a.data(), state_a.size()))
+        return false;
+    if (!libretro_ext_rollback_serialize_blob_impl(state_b.data(), state_b.size(), 11))
+        return false;
+
+    uint64_t delta_size = 0;
+    if (!libretro_ext_rollback_create_delta_impl(state_a.data(), state_a.size(), 10, state_b.data(), state_b.size(), 11, delta.data(), delta.size(), &delta_size))
+        return false;
+
+    std::vector<uint8_t> working = state_a;
+    uint64_t resulting_frame = 0;
+    if (!libretro_ext_rollback_apply_delta_impl(working.data(), working.size(), delta.data(), delta_size, 10, &resulting_frame))
+        return false;
+    if (resulting_frame != 11)
+        return false;
+    if (working != state_b)
+        return false;
+    if (!libretro_ext_rollback_apply_delta_impl(working.data(), working.size(), delta.data(), delta_size, 11, &resulting_frame))
+        return false;
+    return working == state_a;
+}
+
+static const libretro_ext_rollback_api g_rollback_api = {
+    1,
+    sizeof(libretro_ext_rollback_api),
+    libretro_ext_rollback_get_info_impl,
+    libretro_ext_rollback_get_state_size_impl,
+    libretro_ext_rollback_serialize_blob_impl,
+    libretro_ext_rollback_unserialize_blob_impl,
+    libretro_ext_rollback_get_delta_max_size_impl,
+    libretro_ext_rollback_create_delta_impl,
+    libretro_ext_rollback_apply_delta_impl,
+    libretro_ext_rollback_self_test_new_impl,
+    libretro_ext_rollback_set_diagnostics_enabled_impl,
+    libretro_ext_rollback_get_diagnostics_enabled_impl
 };
 
 static void libretro_ext_log_api_signature_once(const char* entrypoint)
@@ -1703,9 +2811,29 @@ extern "C" {
         return g_ext_api.abi_version;
     }
 
-    LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_api_struct_size()
-    {
-        return g_ext_api.sizeof_struct;
-    }
+LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_api_struct_size()
+{
+    return g_ext_api.sizeof_struct;
+}
+
+LIBRETRO_EXT_EXPORT const libretro_ext_rollback_api* libretro_ext_get_rollback_api()
+{
+    return &g_rollback_api;
+}
+
+LIBRETRO_EXT_EXPORT const libretro_ext_rollback_api* libretro_ext_get_rollback_api_v1()
+{
+    return &g_rollback_api;
+}
+
+LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_rollback_api_abi_version()
+{
+    return g_rollback_api.abi_version;
+}
+
+LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_rollback_api_struct_size()
+{
+    return g_rollback_api.sizeof_struct;
+}
 }
 #endif // LIBRETRO_EXT_HPP

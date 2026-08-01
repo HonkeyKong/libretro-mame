@@ -48,6 +48,7 @@ enum save_error
 
 // callback delegate for presave/postload
 typedef named_delegate<void ()> save_prepost_delegate;
+using save_item_filter_delegate = delegate<bool (const char *, device_t *, const char *, const char *, int, const void *, u32, u32, u32, u32)>;
 
 
 /// \brief Declare a type as safe to automatically save/restore
@@ -307,8 +308,8 @@ public:
 	save_error write_stream(std::ostream &str);
 	save_error read_stream(std::istream &str);
 
-	save_error write_buffer(void *buf, size_t size);
-	save_error read_buffer(const void *buf, size_t size);
+	save_error write_buffer(void *buf, size_t size, save_item_filter_delegate filter = save_item_filter_delegate());
+	save_error read_buffer(const void *buf, size_t size, save_item_filter_delegate filter = save_item_filter_delegate());
 
 private:
 	// state callback item
@@ -323,10 +324,10 @@ private:
 
 	// internal helpers
 	template <typename T, typename U, typename V, typename W>
-	save_error do_write(T check_space, U write_block, V start_header, W start_data);
+	save_error do_write(T check_space, U write_block, V start_header, W start_data, save_item_filter_delegate filter);
 	template <typename T, typename U, typename V, typename W>
-	save_error do_read(T check_length, U read_block, V start_header, W start_data);
-	u32 signature() const;
+	save_error do_read(T check_length, U read_block, V start_header, W start_data, save_item_filter_delegate filter);
+	u32 signature(save_item_filter_delegate filter = save_item_filter_delegate()) const;
 	void dump_registry() const;
 	static save_error validate_header(const u8 *header, const char *gamename, u32 signature, void (CLIB_DECL *errormsg)(const char *fmt, ...), const char *error_prefix);
 
@@ -352,7 +353,7 @@ public:
 	attotime           m_time;                        // machine timestamp
 
 	ram_state(save_manager &save);
-	static size_t get_size(save_manager &save);
+	static size_t get_size(save_manager &save, save_item_filter_delegate filter = save_item_filter_delegate());
 	save_error save();
 	save_error load();
 };

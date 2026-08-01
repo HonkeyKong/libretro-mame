@@ -270,3 +270,5 @@ You can use the probe utility in this repo:
 - `tests/libretro_ext_probe.c`
 
 It verifies extension symbols, ABI version, and struct size.
+
+For rollback-aware consumers, see [LIBRETRO_EXT_ROLLBACK_API.md](LIBRETRO_EXT_ROLLBACK_API.md).

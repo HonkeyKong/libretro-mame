@@ -1,13 +1,15 @@
 @source:dataeast/btime.cpp
 btime
-bnj
+brubber
 lnc
-zippybug
-nob
 tisland
 
+@source:sega/system1.cpp
+nob
+zippybug
+
 @source:dataeast/bwing.cpp
-bwing
+bwings
 zaviga
 
 @source:dataeast/rohga.cpp
@@ -38,3 +40,7 @@ boomrang
 @source:dataeast/karnov.cpp
 wndrplnt
 karnov
+
+@source:dataeast/tryout.cpp
+tryout
+

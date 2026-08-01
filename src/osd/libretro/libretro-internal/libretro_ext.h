@@ -154,6 +154,123 @@ struct libretro_ext_dip_info
     libretro_ext_dip_setting settings[LIBRETRO_EXT_DIP_MAX_SETTINGS];
 };
 
+// Immutable/static region metadata for rollback-aware frontends.
+// These regions are expected to come from the online startup state and are not
+// intended to be treated as per-frame rollback deltas.
+struct libretro_ext_static_region_info
+{
+    char name[128]{};
+    char region_tag[64]{};
+    char cpu_tag[64]{};
+    char space[32]{};
+    uint64_t offset = 0;
+    uint64_t size = 0;
+    uint32_t flags = 0;
+};
+
+enum : uint32_t
+{
+    LIBRETRO_EXT_STATIC_REGION_IMMUTABLE_AFTER_STARTUP = 1U << 0,
+    LIBRETRO_EXT_STATIC_REGION_SAFE_ROLLBACK_BASELINE  = 1U << 1,
+    LIBRETRO_EXT_STATIC_REGION_OPTIONAL_HASH_IDENTITY  = 1U << 2
+};
+
+// Shared-memory import/export metadata for rollback-aware frontends.
+// These buffers are mutable save data, distinct from immutable static regions.
+struct libretro_ext_share_info
+{
+    char name[128]{};
+    uint64_t size = 0;
+    uint32_t flags = 0;
+};
+
+enum : uint32_t
+{
+    LIBRETRO_EXT_SHARE_IMMUTABLE_AFTER_STARTUP = 1U << 0,
+    LIBRETRO_EXT_SHARE_SAFE_ROLLBACK_BASELINE   = 1U << 1,
+    LIBRETRO_EXT_SHARE_EXPORTABLE               = 1U << 2,
+    LIBRETRO_EXT_SHARE_IMPORTABLE               = 1U << 3
+};
+
+enum : uint32_t
+{
+    RETRO_EXT_ROLLBACK_FIXED_SIZE             = 1U << 0,
+    RETRO_EXT_ROLLBACK_DETERMINISTIC_LAYOUT   = 1U << 1,
+    RETRO_EXT_ROLLBACK_CORE_DELTA_SUPPORTED   = 1U << 2,
+    RETRO_EXT_ROLLBACK_XOR_DELTA              = 1U << 3,
+    RETRO_EXT_ROLLBACK_IN_PLACE_DELTA_APPLY   = 1U << 4,
+    RETRO_EXT_ROLLBACK_EXCLUDES_STATIC_DATA   = 1U << 5
+};
+
+struct retro_ext_rollback_state_header
+{
+    uint32_t magic;
+    uint16_t format_version;
+    uint16_t header_size;
+    uint64_t compatibility_id;
+    uint64_t frame_number;
+    uint32_t payload_size;
+    uint32_t payload_crc32;
+    uint32_t flags;
+    uint32_t reserved;
+};
+
+struct retro_ext_rollback_delta_header
+{
+    uint32_t magic;
+    uint16_t format_version;
+    uint16_t header_size;
+    uint64_t compatibility_id;
+    uint64_t from_frame;
+    uint64_t to_frame;
+    uint32_t state_size;
+    uint32_t block_size;
+    uint32_t changed_block_count;
+    uint32_t encoded_size;
+    uint32_t payload_crc32;
+    uint32_t flags;
+    uint32_t reserved;
+};
+
+struct retro_ext_rollback_delta_block
+{
+    uint32_t block_index;
+    uint16_t data_size;
+    uint16_t reserved;
+};
+
+struct retro_ext_rollback_info
+{
+    uint32_t interface_version = 1;
+    uint32_t flags = 0;
+    uint32_t state_format_version = 1;
+    uint32_t delta_format_version = 1;
+    uint64_t compatibility_id = 0;
+    uint64_t state_size = 0;
+    uint32_t preferred_block_size = 0;
+    uint32_t maximum_delta_size = 0;
+};
+
+struct libretro_ext_rollback_api
+{
+    uint32_t abi_version = 1;
+    uint32_t sizeof_struct = sizeof(libretro_ext_rollback_api);
+    bool (*get_info)(retro_ext_rollback_info* info);
+    uint64_t (*get_state_size)();
+    bool (*serialize)(void* destination, uint64_t destination_size, uint64_t frame_number);
+    bool (*unserialize)(const void* source, uint64_t source_size);
+    uint64_t (*get_delta_max_size)();
+    bool (*create_delta)(const void* from_state, uint64_t from_state_size, uint64_t from_frame,
+                         const void* to_state, uint64_t to_state_size, uint64_t to_frame,
+                         void* delta_destination, uint64_t delta_capacity, uint64_t* delta_size);
+    bool (*apply_delta)(void* state_in_out, uint64_t state_size,
+                        const void* delta, uint64_t delta_size,
+                        uint64_t expected_from_frame, uint64_t* resulting_frame);
+    bool (*rollback_self_test)();
+    void (*set_diagnostics_enabled)(bool enabled);
+    bool (*get_diagnostics_enabled)();
+};
+
 extern uint64_t g_extFrameCounter;
 extern libretro_ext_watch_hit g_extLastWatchHit;
 extern std::vector<libretro_ext_watch_rule> g_extWatchRules;
@@ -255,6 +372,24 @@ struct libretro_ext_api
     void (*add_inject_rule_ex)(const char* cpuTag, uint64_t start, uint64_t end,
                                uint32_t value, uint8_t width, bool oneShot,
                                bool hasMatchValue, uint32_t matchValue, uint32_t matchMask);
+
+    // Immutable/static rollback-baseline regions — metadata only in the first
+    // implementation. Regular retro_serialize() behavior is unchanged.
+    int (*get_static_region_count)();
+    bool (*get_static_region_info)(int index, libretro_ext_static_region_info* out);
+
+    // Shared-memory import/export surface. Frontends can skip immutable entries.
+    int         (*get_share_count)();
+    const char* (*get_share_tag)(int index);
+    uint64_t    (*get_share_size)(const char* share_tag);
+    uint32_t    (*get_share_flags)(const char* share_tag);
+    bool        (*get_share_info)(int index, libretro_ext_share_info* out);
+    uint64_t    (*read_share)(const char* share_tag, uint64_t offset, void* dst, uint64_t bytes);
+    uint64_t    (*write_share)(const char* share_tag, uint64_t offset, const void* src, uint64_t bytes);
+    uint64_t    (*get_rollback_serialize_size)();
+    bool        (*rollback_serialize)(void* data, uint64_t size);
+    bool        (*rollback_unserialize)(const void* data, uint64_t size);
+    bool        (*rollback_self_test)();
 };
 
 static void invalidate_region_cache();
@@ -342,6 +477,10 @@ extern "C" {
     LIBRETRO_EXT_EXPORT const libretro_ext_api* libretro_ext_get_api_v5();
     LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_api_abi_version();
     LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_api_struct_size();
+    LIBRETRO_EXT_EXPORT const libretro_ext_rollback_api* libretro_ext_get_rollback_api();
+    LIBRETRO_EXT_EXPORT const libretro_ext_rollback_api* libretro_ext_get_rollback_api_v1();
+    LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_rollback_api_abi_version();
+    LIBRETRO_EXT_EXPORT uint32_t libretro_ext_get_rollback_api_struct_size();
 }
 
 #endif // LIBRETRO_EXT_H

@@ -253,6 +253,12 @@ Stephh's log (2006.09.20) :
 #include "kabuki.h"
 #include "speaker.h"
 
+namespace {
+
+constexpr double cps1VolumeBoost = 1.5;
+
+}
+
 uint16_t cps_state::cps1_dsw_r(offs_t offset)
 {
 	static const char *const dswname[] = { "IN0", "DSWA", "DSWB", "DSWC" };
@@ -4011,11 +4017,11 @@ void cps_state::cps1_10MHz(machine_config &config)
 
 	ym2151_device &ym2151(YM2151(config, "2151", XTAL(3'579'545)));  /* verified on pcb */
 	ym2151.irq_handler().set_inputline(m_audiocpu, 0);
-	ym2151.add_route(0, "mono", 0.35);
-	ym2151.add_route(1, "mono", 0.35);
+	ym2151.add_route(0, "mono", 0.35 * cps1VolumeBoost);
+	ym2151.add_route(1, "mono", 0.35 * cps1VolumeBoost);
 
 	/* CPS PPU is fed by a 16mhz clock,pin 117 outputs a 4mhz clock which is divided by 4 using 2 74ls74 */
-	OKIM6295(config, m_oki, XTAL(16'000'000)/4/4, okim6295_device::PIN7_HIGH).add_route(ALL_OUTPUTS, "mono", 0.30); // pin 7 can be changed by the game code, see f006 on z80
+	OKIM6295(config, m_oki, XTAL(16'000'000)/4/4, okim6295_device::PIN7_HIGH).add_route(ALL_OUTPUTS, "mono", 0.30 * cps1VolumeBoost); // pin 7 can be changed by the game code, see f006 on z80
 }
 
 void cps_state::forgottn(machine_config &config)
@@ -4083,8 +4089,8 @@ void cps_state::qsound(machine_config &config)
 	config.device_remove("oki");
 
 	qsound_device &qsound(QSOUND(config, "qsound"));
-	qsound.add_route(0, "speaker", 1.0, 0);
-	qsound.add_route(1, "speaker", 1.0, 1);
+	qsound.add_route(0, "speaker", cps1VolumeBoost, 0);
+	qsound.add_route(1, "speaker", cps1VolumeBoost, 1);
 }
 
 void cps_state::wofhfh(machine_config &config)

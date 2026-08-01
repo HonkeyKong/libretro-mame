@@ -73,6 +73,8 @@ public:
 	void simm5_128mbit(machine_config &config);
 	void simm5_32mbit(machine_config &config);
 	void simm6_128mbit(machine_config &config);
+	bool getStaticGameDataRegion(const void*& base, uint64_t& size) const;
+	void dumpLibretroExtInventory() const;
 
 protected:
 	virtual void device_post_load() override;
@@ -140,6 +142,7 @@ private:
 	u16 m_lastb2 = 0;
 	u8* m_user5 = nullptr;
 	std::unique_ptr<u8[]> m_user5_allocated;
+	bool m_user5StaticDataReady = false;
 
 	u8 ssram_r(offs_t offset);
 	void ssram_w(offs_t offset, u8 data);

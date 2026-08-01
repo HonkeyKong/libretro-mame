@@ -4,10 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <libretro.h>
-#include <retro_inline.h>
+#include "libretro.h"
+#include "retro_inline.h"
 
-#include <libretro_shared.h>
+#include "libretro_shared.h"
 
 #ifndef HAVE_NO_LANGEXTRA
 #include "libretro_core_options_intl.h"

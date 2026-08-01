@@ -291,7 +291,8 @@ save_error save_manager::write_file(util::core_file &file)
 			{
 				writer = util::zlib_write(file, 6, 16384);
 				return bool(writer);
-			});
+			},
+			save_item_filter_delegate());
 	return (STATERR_NONE != err) ? err : writer->finalize() ? STATERR_WRITE_ERROR : STATERR_NONE;
 }
 
@@ -323,7 +324,8 @@ save_error save_manager::read_file(util::core_file &file)
 			{
 				reader = util::zlib_read(file, 16384);
 				return bool(reader);
-			});
+			},
+			save_item_filter_delegate());
 }
 
 
@@ -341,7 +343,8 @@ save_error save_manager::write_stream(std::ostream &str)
 				return bool(str.write(reinterpret_cast<const char *>(data), size));
 			},
 			[] () { return true; },
-			[] () { return true; });
+			[] () { return true; },
+			save_item_filter_delegate());
 }
 
 
@@ -359,7 +362,8 @@ save_error save_manager::read_stream(std::istream &str)
 				return bool(str.read(reinterpret_cast<char *>(data), size));
 			},
 			[] () { return true; },
-			[] () { return true; });
+			[] () { return true; },
+			save_item_filter_delegate());
 }
 
 
@@ -368,7 +372,7 @@ save_error save_manager::read_stream(std::istream &str)
 //  to an allocated buffer
 //-------------------------------------------------
 
-save_error save_manager::write_buffer(void *buf, size_t size)
+save_error save_manager::write_buffer(void *buf, size_t size, save_item_filter_delegate filter)
 {
 	return do_write(
 			[size] (size_t total_size) { return size == total_size; },
@@ -379,7 +383,8 @@ save_error save_manager::write_buffer(void *buf, size_t size)
 				return true;
 			},
 			[] () { return true; },
-			[] () { return true; });
+			[] () { return true; },
+			filter);
 }
 
 
@@ -388,7 +393,7 @@ save_error save_manager::write_buffer(void *buf, size_t size)
 //  buffer
 //-------------------------------------------------
 
-save_error save_manager::read_buffer(const void *buf, size_t size)
+save_error save_manager::read_buffer(const void *buf, size_t size, save_item_filter_delegate filter)
 {
 	const u8 *ptr = reinterpret_cast<const u8 *>(buf);
 	const u8 *const end = ptr + size;
@@ -403,7 +408,8 @@ save_error save_manager::read_buffer(const void *buf, size_t size)
 				return true;
 			},
 			[] () { return true; },
-			[] () { return true; });
+			[] () { return true; },
+			filter);
 }
 
 
@@ -412,12 +418,17 @@ save_error save_manager::read_buffer(const void *buf, size_t size)
 //-------------------------------------------------
 
 template <typename T, typename U, typename V, typename W>
-inline save_error save_manager::do_write(T check_space, U write_block, V start_header, W start_data)
+inline save_error save_manager::do_write(T check_space, U write_block, V start_header, W start_data, save_item_filter_delegate filter)
 {
 	// check for sufficient space
 	size_t total_size = HEADER_SIZE;
 	for (const auto &entry : m_entry_list)
+	{
+		if (!filter.isnull() && !filter(entry->m_name.c_str(), entry->m_device, entry->m_module.c_str(), entry->m_tag.c_str(), entry->m_index, entry->m_data, entry->m_typesize, entry->m_typecount, entry->m_blockcount, entry->m_stride))
+			continue;
+
 		total_size += entry->m_typesize * entry->m_typecount * entry->m_blockcount;
+	}
 	if (!check_space(total_size))
 		return STATERR_WRITE_ERROR;
 
@@ -427,7 +438,7 @@ inline save_error save_manager::do_write(T check_space, U write_block, V start_h
 	header[8] = SAVE_VERSION;
 	header[9] = NATIVE_ENDIAN_VALUE_LE_BE(0, SS_MSB_FIRST);
 	strncpy((char *)&header[0x0a], machine().system().name, 0x1c - 0x0a);
-	u32 sig = signature();
+	u32 sig = signature(filter);
 	put_u32le(&header[0x1c], sig);
 
 	// write the header and turn on compression for the rest of the file
@@ -440,6 +451,9 @@ inline save_error save_manager::do_write(T check_space, U write_block, V start_h
 	// then write all the data
 	for (auto &entry : m_entry_list)
 	{
+		if (!filter.isnull() && !filter(entry->m_name.c_str(), entry->m_device, entry->m_module.c_str(), entry->m_tag.c_str(), entry->m_index, entry->m_data, entry->m_typesize, entry->m_typecount, entry->m_blockcount, entry->m_stride))
+			continue;
+
 		const u32 blocksize = entry->m_typesize * entry->m_typecount;
 		const u8 *data = reinterpret_cast<const u8 *>(entry->m_data);
 		for (u32 b = 0; entry->m_blockcount > b; ++b, data += entry->m_stride)
@@ -455,12 +469,17 @@ inline save_error save_manager::do_write(T check_space, U write_block, V start_h
 //-------------------------------------------------
 
 template <typename T, typename U, typename V, typename W>
-inline save_error save_manager::do_read(T check_length, U read_block, V start_header, W start_data)
+inline save_error save_manager::do_read(T check_length, U read_block, V start_header, W start_data, save_item_filter_delegate filter)
 {
 	// check for sufficient space
 	size_t total_size = HEADER_SIZE;
 	for (const auto &entry : m_entry_list)
+	{
+		if (!filter.isnull() && !filter(entry->m_name.c_str(), entry->m_device, entry->m_module.c_str(), entry->m_tag.c_str(), entry->m_index, entry->m_data, entry->m_typesize, entry->m_typecount, entry->m_blockcount, entry->m_stride))
+			continue;
+
 		total_size += entry->m_typesize * entry->m_typecount * entry->m_blockcount;
+	}
 	if (!check_length(total_size))
 		return STATERR_READ_ERROR;
 
@@ -470,8 +489,8 @@ inline save_error save_manager::do_read(T check_length, U read_block, V start_he
 		return STATERR_READ_ERROR;
 
 	// verify the header and report an error if it doesn't match
-	u32 sig = signature();
-	if (validate_header(header, machine().system().name, sig, nullptr, "Error: ")  != STATERR_NONE)
+	u32 sig = signature(filter);
+	if (validate_header(header, machine().system().name, sig, nullptr, "Error: ") != STATERR_NONE)
 		return STATERR_INVALID_HEADER;
 
 	// determine whether or not to flip the data when done
@@ -480,6 +499,9 @@ inline save_error save_manager::do_read(T check_length, U read_block, V start_he
 	// read all the data, flipping if necessary
 	for (auto &entry : m_entry_list)
 	{
+		if (!filter.isnull() && !filter(entry->m_name.c_str(), entry->m_device, entry->m_module.c_str(), entry->m_tag.c_str(), entry->m_index, entry->m_data, entry->m_typesize, entry->m_typecount, entry->m_blockcount, entry->m_stride))
+			continue;
+
 		const u32 blocksize = entry->m_typesize * entry->m_typecount;
 		u8 *data = reinterpret_cast<u8 *>(entry->m_data);
 		for (u32 b = 0; entry->m_blockcount > b; ++b, data += entry->m_stride)
@@ -503,12 +525,15 @@ inline save_error save_manager::do_read(T check_length, U read_block, V start_he
 //  is a CRC over the structure of the data
 //-------------------------------------------------
 
-u32 save_manager::signature() const
+u32 save_manager::signature(save_item_filter_delegate filter) const
 {
 	// iterate over entries
 	util::crc32_creator crc;
 	for (auto &entry : m_entry_list)
 	{
+		if (!filter.isnull() && !filter(entry->m_name.c_str(), entry->m_device, entry->m_module.c_str(), entry->m_tag.c_str(), entry->m_index, entry->m_data, entry->m_typesize, entry->m_typecount, entry->m_blockcount, entry->m_stride))
+			continue;
+
 		// add the entry name to the CRC
 		crc.append(entry->m_name.data(), entry->m_name.length());
 
@@ -616,12 +641,17 @@ ram_state::ram_state(save_manager &save)
 //  uncompressed size of a state
 //-------------------------------------------------
 
-size_t ram_state::get_size(save_manager &save)
+size_t ram_state::get_size(save_manager &save, save_item_filter_delegate filter)
 {
 	size_t totalsize = 0;
 
 	for (auto &entry : save.m_entry_list)
+	{
+		if (!filter.isnull() && !filter(entry->m_name.c_str(), entry->m_device, entry->m_module.c_str(), entry->m_tag.c_str(), entry->m_index, entry->m_data, entry->m_typesize, entry->m_typecount, entry->m_blockcount, entry->m_stride))
+			continue;
+
 		totalsize += entry->m_typesize * entry->m_typecount * entry->m_blockcount;
+	}
 
 	return totalsize + HEADER_SIZE;
 }
