@@ -94,6 +94,7 @@ extern bool write_config_enable;
 extern bool read_config_enable;
 extern bool throttle_enable;
 extern bool auto_save_enable;
+extern bool nvram_readonly_enable;
 extern bool game_specific_saves_enable;
 extern bool buttons_profiles;
 extern bool mame_paths_enable;

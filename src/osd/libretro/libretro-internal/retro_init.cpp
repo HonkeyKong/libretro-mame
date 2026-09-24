@@ -60,6 +60,7 @@ bool autoloadfastforward = false;
 bool write_config_enable = false;
 bool read_config_enable = false;
 bool auto_save_enable = false;
+bool nvram_readonly_enable = false;
 bool throttle_enable = false;
 bool game_specific_saves_enable = false;
 bool buttons_profiles = true;
@@ -534,6 +535,9 @@ static void Set_Default_Option(void)
 
    if (auto_save_enable)
       Add_Option("-autosave");
+
+   if (nvram_readonly_enable)
+      Add_Option("-nvram_readonly");
 
    if (game_specific_saves_enable)
    {

@@ -23,6 +23,10 @@ end
 	project (projname)
 	uuid (os.uuid(_target .. "_" .. _subtarget))
 	kind "ConsoleApp"
+	local libretroExtHasCps3 = (_subtarget == "arcade" or _subtarget == "capcom")
+	if _OPTIONS["SOURCES"] ~= nil then
+		libretroExtHasCps3 = string.find(_OPTIONS["SOURCES"], "capcom/cps3.cpp", 1, true) ~= nil
+	end
 
 	configuration { "android*" }
 if _OPTIONS["osd"] == "retro" then
@@ -46,7 +50,6 @@ end
 --			"SDL2",
 		}
 if _OPTIONS["osd"] == "retro" then
-
 else
                links {
                         "SDL2",
@@ -166,6 +169,9 @@ end
 	-- BEGIN libretro overrides to MAME's GENie build
 	configuration { "libretro*" }
 		kind "SharedLib"	
+		if libretroExtHasCps3 then
+			defines { "LIBRETRO_EXT_HAS_CPS3" }
+		end
 		targetsuffix "_libretro"
 		if _OPTIONS["targetos"]=="android" then
 			targetsuffix "_libretro_android"

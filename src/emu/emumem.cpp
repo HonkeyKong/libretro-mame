@@ -1108,7 +1108,10 @@ memory_region::memory_region(std::string name, u32 length, u8 width, endianness_
 	assert((width == 1) || (width == 2) || (width == 4) || (width == 8));
 	assert(!(length % width));
 	if (length && !m_buffer)
+	{
+		osd_printf_error("Failed to allocate memory region '%s' (%u bytes)\n", m_name.c_str(), length);
 		throw std::bad_alloc();
+	}
 }
 
 std::string memory_share::compare(u8 width, size_t bytes, endianness_t endianness) const

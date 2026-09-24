@@ -26,7 +26,10 @@ ABI rules:
 #include "libretro_ext.h"
 #include "../frontend/mame/mame.h"
 #include "../../../devices/cpu/m68000/m68kcommon.h"
+#if defined(LIBRETRO_EXT_HAS_CPS3)
+#include "machine/intelfsh.h"
 #include "../../../mame/capcom/cps3.h"
+#endif
 
 #include <string>
 #include <vector>
@@ -489,8 +492,9 @@ static void build_static_region_cache(running_machine& mach)
     g_staticRegions.clear();
     g_staticRegionTags.clear();
 
-    if (auto* cps3 = dynamic_cast<cps3_state*>(&mach.root_device()))
-    {
+	#if defined(LIBRETRO_EXT_HAS_CPS3)
+	if (auto* cps3 = dynamic_cast<cps3_state*>(&mach.root_device()))
+	{
         const void* base = nullptr;
         uint64_t size = 0;
         if (cps3->getStaticGameDataRegion(base, size) && size)
@@ -505,10 +509,11 @@ static void build_static_region_cache(running_machine& mach)
                        | LIBRETRO_EXT_STATIC_REGION_OPTIONAL_HASH_IDENTITY;
             g_staticRegionTags.insert(info.region_tag);
             g_staticRegions.push_back(info);
-        }
-    }
+		}
+	}
+	#endif
 
-    for (const auto& entry : mach.memory().regions())
+	for (const auto& entry : mach.memory().regions())
     {
         if (!entry.second || !entry.second->base() || entry.first.empty())
             continue;
@@ -687,11 +692,15 @@ static bool libretro_ext_rollback_item_filter(const char* name, device_t* device
     (void)blockcount;
     (void)stride;
 
-    const char* normalized_tag = (tag && tag[0] == ':') ? (tag + 1) : (tag ? tag : "");
+	const char* normalized_tag = (tag && tag[0] == ':') ? (tag + 1) : (tag ? tag : "");
 	const bool is_decrypted_game_rom = name && (!std::strcmp(name, "m_decrypted_gamerom") || !std::strcmp(name, "decrypted_gamerom"));
 	// Keep decrypted_gamerom in the compact rollback snapshot so decrypted contents round-trip.
 	const bool is_static_region = !is_decrypted_game_rom && (normalized_tag[0] != '\0') && (g_staticRegionTags.find(normalized_tag) != g_staticRegionTags.end());
+	#if defined(LIBRETRO_EXT_HAS_CPS3)
     const bool is_simm_flash_data = is_static_region && device && dynamic_cast<intelfsh_device*>(device) && name && !std::strcmp(name, "m_data");
+	#else
+	const bool is_simm_flash_data = false;
+	#endif
 
     return !is_simm_flash_data;
 }

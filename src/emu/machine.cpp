@@ -45,6 +45,22 @@
 #include <emscripten.h>
 #endif
 
+namespace
+{
+const char *machinePhaseName(machine_phase phase)
+{
+	switch (phase)
+	{
+	case machine_phase::PREINIT: return "preinit";
+	case machine_phase::INIT:    return "init";
+	case machine_phase::RESET:   return "reset";
+	case machine_phase::RUNNING: return "running";
+	case machine_phase::EXIT:    return "exit";
+	default:                     return "unknown";
+	}
+}
+}
+
 
 
 //**************************************************************************
@@ -377,7 +393,12 @@ int running_machine::run(bool quiet)
 		// save the NVRAM and configuration
 		sound().ui_mute(true);
 		if (options().nvram_save())
-			nvram_save();
+		{
+			if (options().nvram_readonly())
+				osd_printf_verbose("NVRAM read-only mode enabled; skipping persistent NVRAM save\n");
+			else
+				nvram_save();
+		}
 		m_configuration->save_settings();
 	}
 	catch (emu_fatalerror const &fatal)
@@ -404,7 +425,7 @@ int running_machine::run(bool quiet)
 	}
 	catch (std::exception const &ex)
 	{
-		osd_printf_error("Caught unhandled %s exception: %s\n", typeid(ex).name(), ex.what());
+		osd_printf_error("Caught unhandled %s exception while starting '%s' in %s phase: %s\n", typeid(ex).name(), m_system.name, machinePhaseName(m_current_phase), ex.what());
 		error = EMU_ERR_FATALERROR;
 	}
 	catch (...)
@@ -1430,7 +1451,13 @@ void running_machine::retro_machine_exit()
 
 	// save the NVRAM and configuration
 	sound().ui_mute(true);
-	nvram_save();
+	if (options().nvram_save())
+	{
+		if (options().nvram_readonly())
+			osd_printf_verbose("NVRAM read-only mode enabled; skipping persistent NVRAM save\n");
+		else
+			nvram_save();
+	}
 	m_configuration->save_settings();
 
 	call_notifiers(MACHINE_NOTIFY_EXIT);

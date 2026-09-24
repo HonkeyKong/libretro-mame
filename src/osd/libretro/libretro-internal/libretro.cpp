@@ -655,6 +655,16 @@ static void check_variables(void)
          auto_save_enable = true;
    }
 
+   var.key   = CORE_NAME "_nvram_readonly";
+   var.value = NULL;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      if (!strcmp(var.value, "disabled"))
+         nvram_readonly_enable = false;
+      if (!strcmp(var.value, "enabled"))
+         nvram_readonly_enable = true;
+   }
+
 
    var.key   = CORE_NAME "_softlists_enable";
    var.value = NULL;

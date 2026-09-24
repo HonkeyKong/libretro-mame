@@ -4,6 +4,11 @@ brubber
 lnc
 tisland
 
+@source:dataeast/cninja.cpp
+cninja
+cninjau
+edrandy
+
 @source:sega/system1.cpp
 nob
 zippybug
@@ -21,6 +26,9 @@ cppicf
 @source:dataeast/brkthru.cpp
 darwin
 
+@source:neogeo/neogeo.cpp
+strhoop
+
 @source:dataeast/dec8.cpp
 lastmisn
 srdarwin
@@ -28,6 +36,16 @@ gondo
 
 @source:dataeast/dec0.cpp
 birdtry
+baddudes
+
+@source:dataeast/supbtime.cpp
+supbtime
+
+@source:dataeast/darkseal.cpp
+gatedoom
+
+@source:dataeast/simpl156.cpp
+magdrop
 
 @source:dataeast/astrof.cpp
 astrof

@@ -224,6 +224,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "disabled"
    },
    {
+      CORE_NAME "_nvram_readonly",
+      "NVRAM Read-Only",
+      NULL,
+      "Loads NVRAM normally but prevents modified NVRAM, EEPROM, and other persistent device data from being written to disk when the emulated machine exits. Save states may still restore and modify NVRAM in memory.",
+      NULL,
+      "system",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled"
+   },
+   {
       CORE_NAME "_softlists_enable",
       "Softlists",
       NULL,
