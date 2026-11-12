@@ -111,6 +111,7 @@ public:
 	emu_timer *first_timer() const noexcept { return m_timer_list; }
 	device_execute_interface *currently_executing() const noexcept { return m_executing_device; }
 	bool can_save() const;
+	bool has_pending_anonymous_timers() const noexcept;
 
 	// execution
 	void timeslice();

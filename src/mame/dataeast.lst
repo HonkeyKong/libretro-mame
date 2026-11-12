@@ -46,6 +46,7 @@ gatedoom
 
 @source:dataeast/simpl156.cpp
 magdrop
+chainrec
 
 @source:dataeast/astrof.cpp
 astrof

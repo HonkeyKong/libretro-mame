@@ -343,6 +343,16 @@ attotime device_scheduler::time() const noexcept
 //  (i.e., no temporary timers outstanding)
 //-------------------------------------------------
 
+bool device_scheduler::has_pending_anonymous_timers() const noexcept
+{
+	// same test as can_save(), but without logging; used by the libretro
+	// frontend to settle the scheduler at frame/save-state boundaries
+	for (emu_timer *timer = m_timer_list; timer; timer = timer->m_next)
+		if (timer->m_temporary && !timer->expire().is_never())
+			return true;
+	return false;
+}
+
 bool device_scheduler::can_save() const
 {
 	// if any live temporary timers exit, fail

@@ -165,6 +165,7 @@ public:
 #if defined(__LIBRETRO__)
 	void retro_machine_exit();
 	void retro_loop();
+	bool retro_settle_for_saveload();
 #endif
 
 	// immediate operations

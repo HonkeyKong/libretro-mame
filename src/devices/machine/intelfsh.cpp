@@ -368,7 +368,25 @@ void intelfsh_device::device_start()
 	save_item( NAME(m_write_buffer_start_address) );
 	save_item( NAME(m_write_buffer_count) );
 	save_item( NAME(m_fast_mode) );
-	save_pointer( &m_data[0], "m_data", m_size);
+	// Static-contents flash (e.g. CPS3 SIMMs) can be tens of MB per system;
+	// keep it out of save states. See set_static_contents().
+	if (!m_static_contents)
+		save_pointer( &m_data[0], "m_data", m_size);
+}
+
+//-------------------------------------------------
+//  note_modified - record that the data buffer
+//  may have changed
+//-------------------------------------------------
+
+void intelfsh_device::note_modified()
+{
+	m_modification_count++;
+	if (m_static_contents && !m_static_write_warned)
+	{
+		m_static_write_warned = true;
+		logerror("%s: flash modified while contents are excluded from save states\n", tag());
+	}
 }
 
 //-------------------------------------------------
@@ -457,6 +475,17 @@ bool intelfsh_device::nvram_write(util::write_stream &file)
 {
 	auto const [err, actual] = write(file, &m_data[0], m_size);
 	return !err;
+}
+
+
+//-------------------------------------------------
+//  nvram_can_write - static-contents flash is
+//  only written back once it has been modified
+//-------------------------------------------------
+
+bool intelfsh_device::nvram_can_write() const
+{
+	return !m_static_contents || m_modification_count != 0;
 }
 
 
@@ -863,6 +892,7 @@ void intelfsh_device::write_full(uint32_t address, uint32_t data)
 		}
 		break;
 	case FM_ERASEAMD3:
+		note_modified();
 		if( (( address & 0xfff ) == 0x555 && ( data & 0xff ) == 0x10 ) ||
 			(( address & 0xfff ) == 0xaaa && ( data & 0xff ) == 0x10 ) )
 		{
@@ -1001,6 +1031,7 @@ void intelfsh_device::write_full(uint32_t address, uint32_t data)
 		}
 		break;
 	case FM_BYTEPROGRAM:
+		note_modified();
 		switch( m_bits )
 		{
 		case 8:
@@ -1025,6 +1056,7 @@ void intelfsh_device::write_full(uint32_t address, uint32_t data)
 		m_flash_mode = FM_NORMAL;
 		break;
 	case FM_WORDPROGRAM1:
+		note_modified();
 		switch(m_bits)
 		{
 		case 8:
@@ -1042,6 +1074,7 @@ void intelfsh_device::write_full(uint32_t address, uint32_t data)
 		m_flash_mode = FM_WORDPROGRAM2;
 		break;
 	case FM_WORDPROGRAM2:
+		note_modified();
 		switch(m_bits)
 		{
 		case 8:
@@ -1059,6 +1092,7 @@ void intelfsh_device::write_full(uint32_t address, uint32_t data)
 		m_flash_mode = FM_NORMAL;
 		break;
 	case FM_WRITEPART1:
+		note_modified();
 		switch( m_bits )
 		{
 		case 8:
@@ -1079,6 +1113,7 @@ void intelfsh_device::write_full(uint32_t address, uint32_t data)
 			m_flash_mode = FM_READSTATUS;
 		break;
 	case FM_WRITEPAGEATMEL:
+		note_modified();
 		if (m_byte_count == 0 && !m_sdp && (address & 0xfff) == 0x555 && (data & 0xff) == 0xaa)
 		{
 			m_flash_mode = FM_READAMDID1;
@@ -1111,6 +1146,7 @@ void intelfsh_device::write_full(uint32_t address, uint32_t data)
 		}
 		break;
 	case FM_WRITEPAGEWINBOND:
+		note_modified();
 		if ((address & 0xffff) == 0x5555 && (data & 0xff) == 0x20)
 		{
 			m_flash_mode = FM_NORMAL;
@@ -1134,6 +1170,7 @@ void intelfsh_device::write_full(uint32_t address, uint32_t data)
 		break;
 
 	case FM_CLEARPART1:
+		note_modified();
 		if( ( data & 0xff ) == 0xd0 )
 		{
 			if (m_maker_id == MFG_SST && m_device_id == 0x04)
@@ -1232,6 +1269,7 @@ void intelfsh_device::write_full(uint32_t address, uint32_t data)
 		m_byte_count = 0;
 		break;
 	case FM_WRITEBUFFER2:
+		note_modified();
 		{
 			if ( m_byte_count < m_write_buffer_count )
 			{

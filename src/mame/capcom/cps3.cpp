@@ -889,6 +889,13 @@ void cps3_state::init_crypt(u32 key1, u32 key2, int altEncryption)
 
 	m_cps3sound->set_base((s8*)m_user5);
 
+	// The decrypted game ROM (16 MB) is derived from SIMM flash, so it is not
+	// saved in states. A memory share would be registered for saving
+	// automatically; install a driver-owned buffer as ROM instead.
+	m_decrypted_gamerom_allocated = make_unique_clear<u32[]>(0x1000000/4);
+	m_decrypted_gamerom = m_decrypted_gamerom_allocated.get();
+	m_maincpu->space(AS_OPCODES).install_rom(0x06000000, 0x06ffffff, m_decrypted_gamerom);
+
 	// set strict verify
 	m_maincpu->sh2drc_set_options(SH2DRC_STRICT_VERIFY);
 	m_maincpu->sh2drc_add_fastram(0x02000000, 0x0207ffff, 0, &m_mainram[0]);
@@ -2170,7 +2177,7 @@ void cps3_state::cps3_map(address_map &map)
 void cps3_state::decrypted_opcodes_map(address_map &map)
 {
 	map(0x00000000, 0x0007ffff).rom().region("bios", 0); // BIOS ROM
-	map(0x06000000, 0x06ffffff).rom().share("decrypted_gamerom");
+	// 0x06000000-0x06ffffff: decrypted game ROM, installed in init_crypt()
 	map(0xc0000000, 0xc00003ff).rom().share("sh2cache_ram_decrypted");
 }
 
@@ -2305,7 +2312,14 @@ void cps3_state::machine_reset()
 void cps3_state::device_post_load()
 {
 	// copy data from flashroms back into user regions + decrypt into regions we execute/draw from.
-	copy_from_nvram();
+	// The SIMM contents are not part of save states (see simm_config), so a
+	// load cannot change them. Skip the full recopy/decrypt unless the game
+	// has programmed or erased flash since the last copy; this keeps rollback
+	// loads cheap.
+	if (!m_flash_copy_valid || flash_modification_signature() != m_flash_copy_signature)
+		copy_from_nvram();
+	else
+		m_user5StaticDataReady = (m_user5 != nullptr);
 	m_gfxdecode->gfx(0)->mark_all_dirty();
 	m_gfxdecode->gfx(1)->mark_all_dirty();
 }
@@ -2380,6 +2394,20 @@ void cps3_state::copy_from_nvram()
 	}
 
 	m_user5StaticDataReady = (m_user5 != nullptr);
+	m_flash_copy_signature = flash_modification_signature();
+	m_flash_copy_valid = true;
+}
+
+u64 cps3_state::flash_modification_signature() const
+{
+	// Modification counts only ever increase, so their sum changes whenever
+	// any SIMM chip is programmed or erased.
+	u64 signature = 0;
+	for (int bank = 0; bank < 7; bank++)
+		for (int chip = 0; chip < 8; chip++)
+			if (m_simm[bank][chip] != nullptr)
+				signature += m_simm[bank][chip]->modification_count();
+	return signature;
 }
 
 bool cps3_state::getStaticGameDataRegion(const void*& base, uint64_t& size) const
@@ -2527,7 +2555,12 @@ SH2_DMA_KLUDGE_CB(cps3_state::dma_callback)
 void cps3_state::simm_config(machine_config &config, unsigned slot, unsigned count)
 {
 	for (unsigned i = 0; i < count; i++)
-		FUJITSU_29F016A(config, m_simm[slot][i]);
+	{
+		// SIMM flash is ~80 MB on a full board and is only reprogrammed by
+		// the CD installer. Keep it out of save states and skip rewriting
+		// unchanged chips to NVRAM on exit.
+		FUJITSU_29F016A(config, m_simm[slot][i]).set_static_contents(true);
+	}
 }
 
 void cps3_state::simm1_64mbit(machine_config &config)

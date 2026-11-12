@@ -17,6 +17,17 @@ public:
 
 	bool is_ready();
 
+	// Arcadia: treat the flash contents as static. The data buffer is kept
+	// out of save states, and NVRAM is only written back after the emulated
+	// system has actually programmed or erased the chip. Only enable this
+	// for flash that the driver does not modify during normal play; a write
+	// made while enabled is not undone by loading an older save state.
+	void set_static_contents(bool enabled) { assert(!started()); m_static_contents = enabled; }
+
+	// Bumped on every program/erase that can change the data buffer.
+	// Not part of save states.
+	uint32_t modification_count() const { return m_modification_count; }
+
 protected:
 	// construction/destruction
 	intelfsh_device(const machine_config &mconfig, device_type type, const char *tag, device_t *owner, uint32_t clock, uint8_t bits, uint32_t size, uint8_t maker_id, uint16_t device_id);
@@ -28,6 +39,7 @@ protected:
 	virtual void nvram_default() override;
 	virtual bool nvram_read(util::read_stream &file) override;
 	virtual bool nvram_write(util::write_stream &file) override;
+	virtual bool nvram_can_write() const override;
 
 	// derived helpers
 	uint32_t read_full(uint32_t offset);
@@ -67,6 +79,12 @@ protected:
 	uint32_t                 m_write_buffer_count;
 
 	bool                     m_fast_mode;
+
+	bool                     m_static_contents = false;
+	uint32_t                 m_modification_count = 0;
+	bool                     m_static_write_warned = false;
+
+	void note_modified();
 };
 
 

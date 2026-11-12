@@ -1466,6 +1466,34 @@ void running_machine::retro_machine_exit()
 	m_logfile.reset();
 }
 
+//-------------------------------------------------
+//  retro_settle_for_saveload - run the scheduler
+//  until no anonymous timers are pending. Their
+//  callbacks are not part of save states, so
+//  saving or loading while they are live either
+//  loses them or lets them clobber restored state
+//  (MAME's own handle_saveload() defers for the
+//  same reason). Returns true when settled.
+//-------------------------------------------------
+
+bool running_machine::retro_settle_for_saveload()
+{
+	if (m_current_phase != machine_phase::RUNNING)
+		return !m_scheduler.has_pending_anonymous_timers();
+
+	// anonymous timers are normally zero-delay synchronize() calls, so this
+	// converges in a handful of timeslices; bound it just in case
+	for (int i = 0; i < 256 && m_scheduler.has_pending_anonymous_timers(); i++)
+		m_scheduler.timeslice();
+
+	if (m_scheduler.has_pending_anonymous_timers())
+	{
+		logerror("retro_settle_for_saveload: anonymous timers still pending\n");
+		return false;
+	}
+	return true;
+}
+
 void running_machine::retro_loop()
 {
 	// get most recent input now 
@@ -1491,6 +1519,12 @@ void running_machine::retro_loop()
 		if (m_saveload_schedule != saveload_schedule::NONE)
 			handle_saveload();
 	}
+
+	// Always end the frame with no anonymous (synchronize) timers pending, so
+	// retro_serialize() between frames never drops in-flight events such as
+	// sound latch writes. Done every frame, so it stays deterministic.
+	if (!m_paused)
+		retro_settle_for_saveload();
 
 	if ((m_hard_reset_pending || m_exit_pending) && m_saveload_schedule == saveload_schedule::NONE)
 	{

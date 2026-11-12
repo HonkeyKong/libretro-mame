@@ -904,6 +904,7 @@ static bool libretro_ext_rollback_serialize_impl(void* data, uint64_t size)
         return libretro_ext_rollback_item_filter(name, device, module, tag, index, data, valsize, valcount, blockcount, stride);
     });
 
+    mach->retro_settle_for_saveload();
     return mach->save().write_buffer(data, (size_t)size, filter) == STATERR_NONE;
 }
 
@@ -920,6 +921,7 @@ static bool libretro_ext_rollback_unserialize_impl(const void* data, uint64_t si
         return libretro_ext_rollback_item_filter(name, device, module, tag, index, data, valsize, valcount, blockcount, stride);
     });
 
+    mach->retro_settle_for_saveload();
     return mach->save().read_buffer(data, (size_t)size, filter) == STATERR_NONE;
 }
 

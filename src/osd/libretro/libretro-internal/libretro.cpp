@@ -1006,7 +1006,10 @@ bool retro_serialize(void *data, size_t size)
    if (     mame_machine_manager::instance() != NULL
 	      && mame_machine_manager::instance()->machine() != NULL
 	      && ram_state::get_size(mame_machine_manager::instance()->machine()->save()) > 0)
+   {
+      mame_machine_manager::instance()->machine()->retro_settle_for_saveload();
       return (mame_machine_manager::instance()->machine()->save().write_buffer((u8*)data, size) == STATERR_NONE);
+   }
 
    return false;
 }
@@ -1015,7 +1018,13 @@ bool retro_unserialize(const void *data, size_t size)
    if (     mame_machine_manager::instance() != NULL
          && mame_machine_manager::instance()->machine() != NULL
          &&	ram_state::get_size(mame_machine_manager::instance()->machine()->save()) > 0)
+   {
+      /* Drain pending synchronize() timers (e.g. latch init callbacks right
+       * after retro_load_game) so they can't fire after the load and
+       * overwrite restored state. */
+      mame_machine_manager::instance()->machine()->retro_settle_for_saveload();
       return (mame_machine_manager::instance()->machine()->save().read_buffer((u8*)data, size) == STATERR_NONE);
+   }
 
    return false;
 }

@@ -43,7 +43,6 @@ public:
 		, m_tilemap_regs(*this, "ppu_tmap_regs")
 		, m_ppu_crtc_zoom(*this, "ppu_crtc_zoom")
 		, m_sh2cache_ram(*this, "sh2cache_ram")
-		, m_decrypted_gamerom(*this, "decrypted_gamerom")
 		, m_sh2cache_ram_decrypted(*this, "sh2cache_ram_decrypted")
 		, m_user4_region(*this, "user4")
 		, m_user5_region(*this, "user5")
@@ -83,6 +82,7 @@ protected:
 	virtual void video_start() override ATTR_COLD;
 
 	void copy_from_nvram();
+	u64 flash_modification_signature() const;
 	u32 m_current_table_address;
 	required_device<sh7604_device> m_maincpu;
 	required_device<gfxdecode_device> m_gfxdecode;
@@ -99,7 +99,11 @@ protected:
 	required_shared_ptr<u32> m_tilemap_regs;
 	required_shared_ptr<u32> m_ppu_crtc_zoom;
 	required_shared_ptr<u32> m_sh2cache_ram;
-	required_shared_ptr<u32> m_decrypted_gamerom;
+	// Decrypted copy of SIMM 1/2 program flash, fetched as opcodes. Driver-owned
+	// (not a memory share) so it stays out of save states; rebuilt from flash by
+	// copy_from_nvram() and the flash write path. See init_crypt().
+	std::unique_ptr<u32[]> m_decrypted_gamerom_allocated;
+	u32 *m_decrypted_gamerom = nullptr;
 	required_shared_ptr<u32> m_sh2cache_ram_decrypted;
 
 	optional_memory_region      m_user4_region;
@@ -143,6 +147,9 @@ private:
 	u8* m_user5 = nullptr;
 	std::unique_ptr<u8[]> m_user5_allocated;
 	bool m_user5StaticDataReady = false;
+	// Flash modification signature at the last copy_from_nvram(); not saved.
+	u64 m_flash_copy_signature = 0;
+	bool m_flash_copy_valid = false;
 
 	u8 ssram_r(offs_t offset);
 	void ssram_w(offs_t offset, u8 data);
