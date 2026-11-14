@@ -1861,6 +1861,29 @@ time_t ioport_manager::initialize()
 	for (auto &port : m_portlist)
 		port.second->init_live_state();
 
+	// Arcadia: save live analog state so rollback/state loads restore dial,
+	// paddle, etc. positions. Registered only when analog fields exist so the
+	// save-state signature of digital-only systems is unchanged.
+	bool has_analog = false;
+	for (auto &port : m_portlist)
+	{
+		for (analog_field &analog : port.second->live().analoglist)
+		{
+			const char *tag = port.second->tag();
+			const int index = int(analog.field().mask());
+			machine().save().save_item(nullptr, "ioport_analog", tag, index, analog.m_accum, "m_accum");
+			machine().save().save_item(nullptr, "ioport_analog", tag, index, analog.m_previous, "m_previous");
+			machine().save().save_item(nullptr, "ioport_analog", tag, index, analog.m_previousanalog, "m_previousanalog");
+			has_analog = true;
+		}
+	}
+	if (has_analog)
+	{
+		// needed by frame_interpolate(), which analog reads use between frames
+		machine().save().save_item(nullptr, "ioport", nullptr, 0, m_last_frame_time, "m_last_frame_time");
+		machine().save().save_item(nullptr, "ioport", nullptr, 0, m_last_delta_nsec, "m_last_delta_nsec");
+	}
+
 	// handle autoselection of devices
 	init_autoselect_devices({ IPT_AD_STICK_X,  IPT_AD_STICK_Y,   IPT_AD_STICK_Z }, OPTION_ADSTICK_DEVICE,    "analog joystick");
 	init_autoselect_devices({ IPT_PADDLE,      IPT_PADDLE_V },                     OPTION_PADDLE_DEVICE,     "paddle");
